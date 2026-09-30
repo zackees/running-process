@@ -139,7 +139,13 @@ backend-identity = [
 # The actor-backed substrate needs semantic tree termination today.  It uses
 # the same platform implementation as the synchronous facade; it does not
 # expose Tokio types or create a second engine.
-async-process = ["dep:tokio", "process-inspection", "running-process-platform-internal/async-process"]
+async-process = [
+    "tokio/io-util",
+    "tokio/macros",
+    "tokio/process",
+    "process-inspection",
+    "running-process-platform-internal/async-process",
+]
 core = []
 telemetry = []
 pty = ["terminal-graphics", "process-inspection", "running-process-platform-internal/pty"]
@@ -189,7 +195,6 @@ client-async = [
     # takeover handler (`broker::session_takeover`) spawns compiler children
     # into — so a `client-async` consumer daemon can serve SESSION.
     "async-process",
-    "dep:tokio",
     "tokio/rt",
     "tokio/rt-multi-thread",
     "tokio/net",
@@ -208,7 +213,7 @@ daemon = [
     "client",
     "client-async",
     "pty",
-    "dep:tokio", "dep:tokio-util", "dep:bytes", "dep:futures-util",
+    "dep:tokio-util", "dep:bytes", "dep:futures-util",
     "tokio/full",
     "dep:tracing", "dep:tracing-subscriber",
     "dep:rusqlite", "process-inspection",
@@ -268,13 +273,15 @@ running-process-protocol = { path = "../running-process-protocol", version = "4.
 # platform capability unconditionally while keeping public inspection APIs
 # behind `process-inspection`. Other platform capabilities stay opt-in.
 running-process-platform-internal = { path = "../running-process-platform-internal", version = "4.10.15", default-features = false, features = ["process-inspection"] }
-# Wave 5 of #165: daemon-feature deps. All optional.
-# tokio: `client-async` (#414) only needs the `rt` (spawn_blocking)
-# and `time` (`tokio::time::timeout`) features; the `daemon` feature
-# layers `tokio/full` on top below. Cargo unifies feature sets, so
-# any consumer enabling both ends up with the daemon footprint
-# exactly as before.
-tokio = { version = "1", default-features = false, features = ["io-util", "net", "process", "rt", "rt-multi-thread", "sync", "time"], optional = true }
+# Wave 5 of #165: daemon-feature deps. All optional except tokio.
+# tokio (#850): unconditional since NativeProcess's lifecycle observer runs
+# on the process-global actor runtime. The base set is deliberately minimal
+# -- a scheduler, timers, and sync primitives -- and pulls in no I/O driver
+# (no mio). `async-process`, `client-async` and `daemon` layer process,
+# io-util, macros, net, and `tokio/full` on top; Cargo unifies feature sets,
+# so any consumer enabling those ends up with the same footprint as before.
+# `ci/minimal_async_platform_graph.py` enforces this base set.
+tokio = { version = "1", default-features = false, features = ["rt", "rt-multi-thread", "sync", "time"] }
 tokio-util = { version = "0.7", features = ["codec"], optional = true }
 bytes = { version = "1", optional = true }
 futures-util = { version = "0.3", features = ["sink"], optional = true }

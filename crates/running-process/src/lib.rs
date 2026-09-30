@@ -20,6 +20,7 @@ use crate::observer::{ObserverEmitter, ProcessWatchEmitter};
 pub use running_process_platform_internal::foreground;
 pub(crate) use running_process_platform_internal::platform;
 
+mod actor_runtime;
 #[cfg(feature = "async-process")]
 mod async_process;
 #[cfg(feature = "async-process")]
@@ -362,8 +363,11 @@ struct SharedState {
     /// and `exited` exactly once on the first returncode transition.
     observer: Option<ObserverEmitter>,
     /// Guards against emitting more than one `exited` event when several
-    /// code paths (waiter thread, `poll`, `kill`) race to record the exit.
+    /// code paths (lifecycle task, `poll`, `kill`) race to record the exit.
     observer_exit_emitted: AtomicBool,
+    /// #850: exit publication for waiters that run on the actor runtime.
+    /// Mirrors `returncode`; every write goes through [`Self::record_exit`].
+    exit_code: tokio::sync::watch::Sender<Option<i32>>,
 }
 
 struct ChildState {
@@ -490,7 +494,16 @@ impl SharedState {
             returncode: AtomicI64::new(RETURNCODE_NOT_SET),
             observer,
             observer_exit_emitted: AtomicBool::new(false),
+            exit_code: tokio::sync::watch::Sender::new(None),
         }
+    }
+
+    /// Publish the exit code to every observer: lock-free readers of
+    /// `returncode`, condvar waiters, and actor-runtime waiters.
+    fn record_exit(&self, code: i32) {
+        self.returncode.store(code as i64, Ordering::Release);
+        self.exit_code.send_replace(Some(code));
+        self.condvar.notify_all();
     }
 
     /// Emit the lifecycle `exited` event exactly once, regardless of which
@@ -803,84 +816,63 @@ impl NativeProcess {
         Ok(())
     }
 
-    /// Background thread that polls for process exit and stores the exit code
-    /// atomically. This makes `returncode` auto-update without explicit `poll()`.
+    /// Lifecycle observer that polls for process exit and records the exit
+    /// code, so `returncode` auto-updates without an explicit `poll()`.
+    ///
+    /// #850: this is a task on the process-global actor runtime, not a
+    /// dedicated thread per process, so N live children cost N timers rather
+    /// than N OS threads. It must never park a runtime worker: the child lock
+    /// is only ever `try_lock`ed (Windows `kill` holds it across a blocking
+    /// reap, which simply defers this tick), and the post-exit capture drain
+    /// is awaited with timers instead of a condvar.
     fn spawn_exit_waiter(&self) {
         let child = Arc::clone(&self.child);
         let shared = Arc::clone(&self.shared);
         let capture = self.config.capture;
         let capture_cancellation = Arc::clone(&self.capture_cancellation);
-        thread::spawn(move || {
+        actor_runtime::runtime().spawn(async move {
+            // #199: intentional polling. `try_wait` is the only reap
+            // primitive shared by standard and exact-trace children; 10ms
+            // keeps the cost negligible while staying responsive.
+            let mut tick = tokio::time::interval(Duration::from_millis(10));
+            tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
             loop {
+                tick.tick().await;
                 if shared.returncode.load(Ordering::Acquire) != RETURNCODE_NOT_SET {
                     return;
                 }
-                let exited = {
-                    let mut guard = child.lock().expect("child mutex poisoned");
-                    if let Some(child_state) = guard.as_mut() {
-                        let pid = child_state.child.id();
-                        match child_state.child.try_wait_code() {
-                            Ok(Some(code)) => {
-                                shared.returncode.store(code as i64, Ordering::Release);
-                                // Phase 1 of #221: lifecycle `exited`. Emit
-                                // before notifying waiters and is guarded so
-                                // only the first exit-observer fires.
-                                shared.emit_exited(pid, code);
-                                shared.condvar.notify_all();
-                                true
-                            }
-                            Ok(None) => false,
-                            Err(_error) => {
-                                #[cfg(unix)]
-                                if child_try_wait_error_is_retryable(&_error) {
-                                    false
-                                } else {
-                                    return;
-                                }
-                                #[cfg(windows)]
-                                return;
-                            }
-                        }
-                    } else {
-                        return;
-                    }
-                };
-                if exited {
-                    // The direct child has exited. Bound the capture-completion
-                    // wait so wait()/close()/read_* on the natural-exit path
-                    // cannot wedge forever when a grandchild inherited the pipe
-                    // and outlives the child (issue #590, cluster A). Unlike
-                    // `kill_impl` we do NOT cancel the reader up front: a
-                    // short-lived grandchild may still emit output the caller
-                    // expects to capture, so the reader is left to drain
-                    // naturally within the grace window. Only if the window
-                    // elapses with the pipe still held open do we cancel, to
-                    // release the otherwise-leaked reader thread (Windows:
-                    // CancelIoEx; Unix: a per-reader wake socket). The child
-                    // lock is released before this
-                    // potentially-blocking finalize so poll()/kill() are never
-                    // held off.
-                    if capture {
-                        let drained = finalize_capture_completion(&shared, kill_drain_deadline());
-                        if !drained {
-                            running_process_platform_internal::platform::process::cancel_capture_reader(
-                                &capture_cancellation,
-                            );
-                        }
-                    }
-                    // Non-invasive watch EOF is owned by the platform
-                    // descendant backend: Linux/macOS perform one final
-                    // reconciliation and Windows waits for
-                    // ACTIVE_PROCESS_ZERO. Closing here would race those
-                    // final descendant notifications.
-                    return;
+                match observe_child_exit(&child, &shared) {
+                    ExitObservation::Running => continue,
+                    ExitObservation::Gone => return,
+                    ExitObservation::Exited => {}
                 }
-                // #199: intentional — capture thread polling for
-                // child-exit. `try_wait` is non-blocking by design;
-                // we can't block here because the thread also drains
-                // pipe state alongside the exit check. 10ms keeps the
-                // CPU cost negligible while staying responsive.
-                thread::sleep(Duration::from_millis(10));
+                // The direct child has exited. Bound the capture-completion
+                // wait so wait()/close()/read_* on the natural-exit path
+                // cannot wedge forever when a grandchild inherited the pipe
+                // and outlives the child (issue #590, cluster A). Unlike
+                // `kill_impl` we do NOT cancel the reader up front: a
+                // short-lived grandchild may still emit output the caller
+                // expects to capture, so the reader is left to drain
+                // naturally within the grace window. Only if the window
+                // elapses with the pipe still held open do we cancel, to
+                // release the otherwise-leaked reader thread (Windows:
+                // CancelIoEx; Unix: a per-reader wake socket). The child
+                // lock is not held here, so poll()/kill() are never held off.
+                if capture {
+                    let drained =
+                        finalize_capture_completion_async(&shared, kill_drain_deadline()).await;
+                    if !drained {
+                        running_process_platform_internal::platform::process::cancel_capture_reader(
+                            &capture_cancellation,
+                        );
+                    }
+                }
+                // Non-invasive watch EOF is owned by the platform
+                // descendant backend: Linux/macOS perform one final
+                // reconciliation and Windows waits for
+                // ACTIVE_PROCESS_ZERO. Closing here would race those
+                // final descendant notifications.
+                return;
             }
         });
     }
@@ -978,39 +970,30 @@ impl NativeProcess {
             self.finish_capture_drain();
             return Ok(code);
         }
-        let start = Instant::now();
-        let mut guard = self.shared.queues.lock().expect("queue mutex poisoned");
-        loop {
-            // Check returncode (set by exit-waiter thread via atomic + condvar).
-            let rc = self.shared.returncode.load(Ordering::Acquire);
-            if rc != RETURNCODE_NOT_SET {
-                drop(guard);
-                let code = rc as i32;
-                self.finish_capture_drain();
-                return Ok(code);
+        // #850: the exit is published by the lifecycle task on the actor
+        // runtime. `block_on_anywhere` is safe from a Tokio worker too, so a
+        // sync caller inside async code keeps working rather than erroring.
+        let mut exit = self.shared.exit_code.subscribe();
+        let outcome = actor_runtime::block_on_anywhere(async move {
+            let exited = async move {
+                exit.wait_for(Option::is_some)
+                    .await
+                    .ok()
+                    .and_then(|code| *code)
+            };
+            match timeout {
+                Some(limit) => tokio::time::timeout(limit, exited).await.ok(),
+                None => Some(exited.await),
             }
-            if let Some(limit) = timeout {
-                let elapsed = start.elapsed();
-                if elapsed >= limit {
-                    return Err(ProcessError::Timeout);
-                }
-                let remaining = limit - elapsed;
-                // Wait on condvar with timeout, capped at 50ms to recheck.
-                let wait_time = remaining.min(Duration::from_millis(50));
-                guard = self
-                    .shared
-                    .condvar
-                    .wait_timeout(guard, wait_time)
-                    .expect("queue mutex poisoned")
-                    .0;
-            } else {
-                // Wait on condvar with periodic recheck.
-                guard = self
-                    .shared
-                    .condvar
-                    .wait_timeout(guard, Duration::from_millis(50))
-                    .expect("queue mutex poisoned")
-                    .0;
+        });
+        match outcome {
+            None => Err(ProcessError::Timeout),
+            // The sender lives in `self.shared`, so it cannot close while
+            // `self` is borrowed; treat that impossibility as not running.
+            Some(None) => Err(ProcessError::NotRunning),
+            Some(Some(code)) => {
+                self.finish_capture_drain();
+                Ok(code)
             }
         }
     }
@@ -1609,8 +1592,7 @@ impl NativeProcess {
     }
 
     fn set_returncode(&self, code: i32) {
-        self.shared.returncode.store(code as i64, Ordering::Release);
-        self.shared.condvar.notify_all();
+        self.shared.record_exit(code);
     }
 
     /// Bounded capture drain for the natural-exit and `close` paths
@@ -1678,6 +1660,60 @@ impl NativeProcess {
 /// `true` if the reader threads flipped the flags on their own, `false`
 /// if the deadline forced them. A reader thread that later unblocks and
 /// re-sets `closed = true` is a harmless no-op.
+enum ExitObservation {
+    Running,
+    Exited,
+    Gone,
+}
+
+/// One non-blocking lifecycle check for the actor-runtime exit observer.
+fn observe_child_exit(child: &Mutex<Option<ChildState>>, shared: &SharedState) -> ExitObservation {
+    let mut guard = match child.try_lock() {
+        Ok(guard) => guard,
+        // Another caller is reaping or signalling; look again next tick.
+        Err(std::sync::TryLockError::WouldBlock) => return ExitObservation::Running,
+        Err(std::sync::TryLockError::Poisoned(_)) => return ExitObservation::Gone,
+    };
+    let Some(child_state) = guard.as_mut() else {
+        return ExitObservation::Gone;
+    };
+    let pid = child_state.child.id();
+    match child_state.child.try_wait_code() {
+        Ok(Some(code)) => {
+            shared.record_exit(code);
+            // Phase 1 of #221: lifecycle `exited`, guarded so only the
+            // first exit-observer fires.
+            shared.emit_exited(pid, code);
+            ExitObservation::Exited
+        }
+        Ok(None) => ExitObservation::Running,
+        #[cfg(unix)]
+        Err(error) if child_try_wait_error_is_retryable(&error) => ExitObservation::Running,
+        Err(_) => ExitObservation::Gone,
+    }
+}
+
+/// Timer-driven twin of [`finalize_capture_completion`] for the actor
+/// runtime, where parking on the queue condvar would block a worker.
+async fn finalize_capture_completion_async(shared: &SharedState, deadline: Instant) -> bool {
+    loop {
+        {
+            let mut guard = shared.queues.lock().expect("queue mutex poisoned");
+            if guard.stdout_closed && guard.stderr_closed {
+                return true;
+            }
+            if Instant::now() >= deadline {
+                guard.stdout_closed = true;
+                guard.stderr_closed = true;
+                shared.condvar.notify_all();
+                return false;
+            }
+        }
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        tokio::time::sleep(remaining.min(Duration::from_millis(10))).await;
+    }
+}
+
 fn finalize_capture_completion(shared: &SharedState, deadline: Instant) -> bool {
     let mut guard = shared.queues.lock().expect("queue mutex poisoned");
     while !(guard.stdout_closed && guard.stderr_closed) {

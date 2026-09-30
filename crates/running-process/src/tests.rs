@@ -1260,3 +1260,122 @@ fn a_child_with_its_own_console_is_targetable_by_pid() {
         }
     }
 }
+
+// ── #850: lifecycle over the actor runtime ──
+
+/// A portable `testbins` child that sleeps `millis` and exits 0.
+fn sleeper_config(millis: u64) -> ProcessConfig {
+    let executable = std::env::current_exe().expect("test executable path");
+    let profile = executable
+        .parent()
+        .and_then(std::path::Path::parent)
+        .expect("test binary must live under <profile>/deps");
+    let fixture = profile.join(format!(
+        "testbin-stdio-scripted{}",
+        std::env::consts::EXE_SUFFIX
+    ));
+    assert!(
+        fixture.is_file(),
+        "missing fixture {}; run `soldr cargo build -p testbins` first",
+        fixture.display()
+    );
+    ProcessConfig {
+        command: CommandSpec::Argv(vec![
+            fixture.to_string_lossy().into_owned(),
+            format!("sleep-ms:{millis}"),
+        ]),
+        cwd: None,
+        env: None,
+        capture: false,
+        stderr_mode: StderrMode::Stdout,
+        creationflags: None,
+        create_process_group: false,
+        stdin_mode: StdinMode::Null,
+        nice: None,
+        address_space_limit_bytes: None,
+    }
+}
+
+/// Live thread count where procfs exposes it (Linux); `None` elsewhere.
+fn live_thread_count() -> Option<usize> {
+    std::fs::read_dir("/proc/self/task")
+        .ok()
+        .map(Iterator::count)
+}
+
+/// N live children must not cost N lifecycle threads. Before #850 each
+/// `NativeProcess::start` spawned a dedicated exit-waiter thread; the
+/// observer now runs as a task on the bounded actor runtime.
+#[test]
+fn concurrent_native_processes_do_not_cost_a_thread_each() {
+    const CHILDREN: usize = 16;
+    // Initialise the bounded (2..=4 worker) runtime outside the measured
+    // window so the assertion is about per-process cost only.
+    let _ = actor_runtime::runtime();
+    std::thread::sleep(Duration::from_millis(50));
+    let Some(before) = live_thread_count() else {
+        eprintln!("skipping: this host exposes no per-process thread listing");
+        return;
+    };
+    let processes: Vec<NativeProcess> = (0..CHILDREN)
+        .map(|_| {
+            let process = NativeProcess::new(sleeper_config(30_000));
+            process.start().expect("sleeper starts");
+            process
+        })
+        .collect();
+    let during = live_thread_count().unwrap_or(before);
+    for process in &processes {
+        process.kill().expect("sleeper is killed");
+    }
+    assert!(
+        during.saturating_sub(before) < CHILDREN / 2,
+        "{CHILDREN} children grew the thread count from {before} to {during}"
+    );
+}
+
+/// A sync `wait` made from inside a Tokio runtime neither deadlocks nor
+/// reports a runtime-context error.
+#[tokio::test(flavor = "current_thread")]
+async fn sync_wait_inside_current_thread_tokio_runtime() {
+    let process = NativeProcess::new(sleeper_config(200));
+    process.start().expect("child starts");
+    let code = process
+        .wait(Some(Duration::from_secs(60)))
+        .expect("sync wait inside a runtime succeeds");
+    assert_eq!(code, 0);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn sync_wait_and_kill_inside_multi_thread_tokio_runtime() {
+    let process = NativeProcess::new(sleeper_config(30_000));
+    process.start().expect("child starts");
+    assert!(process.pid().is_some());
+    assert!(matches!(
+        process.wait(Some(Duration::from_millis(50))),
+        Err(ProcessError::Timeout)
+    ));
+    process.kill().expect("kill inside a runtime succeeds");
+    let code = process
+        .wait(Some(Duration::from_secs(60)))
+        .expect("wait after kill succeeds");
+    assert_ne!(code, 0);
+}
+
+/// Sync `wait` from one of the actor runtime's own workers must not starve
+/// the pool that publishes the exit.
+#[test]
+fn sync_wait_from_an_actor_runtime_worker() {
+    let code = actor_runtime::runtime()
+        .block_on(async {
+            tokio::spawn(async {
+                let process = NativeProcess::new(sleeper_config(200));
+                process.start().expect("child starts");
+                process.wait(Some(Duration::from_secs(60)))
+            })
+            .await
+        })
+        .expect("task joins")
+        .expect("wait succeeds");
+    assert_eq!(code, 0);
+}

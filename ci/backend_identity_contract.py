@@ -40,7 +40,8 @@ FORBIDDEN_PACKAGES = {
     "console-subscriber",
     "portable-pty",
     "rusqlite",
-    "tokio",
+    # #850: Tokio itself is unconditional now; its I/O driver must not be.
+    "mio",
     "tokio-util",
     "toml",
     "tracing",

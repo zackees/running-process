@@ -41,7 +41,8 @@ FORBIDDEN_PACKAGES = {
     "serde",
     "serde_json",
     "sha2",
-    "tokio",
+    # #850: Tokio itself is unconditional now; its I/O driver must not be.
+    "mio",
     "tokio-util",
     "toml",
     "tracing",

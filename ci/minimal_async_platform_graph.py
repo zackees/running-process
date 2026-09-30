@@ -1,4 +1,14 @@
-"""Structural dependency-ownership guard for #1146."""
+"""Structural dependency-ownership guard for #1146, amended by #850.
+
+#1146 kept Tokio out of every process-only graph. #850 deliberately amends
+that once: `NativeProcess` observes its child's lifecycle from a task on the
+process-global actor runtime, so the root crate depends on Tokio
+unconditionally. The amendment is narrow and enforced here: the root's base
+Tokio dependency is exactly a scheduler, timers and sync primitives (no I/O
+driver, so no `mio`), heavier Tokio features are only layered on by the
+opt-in features that already owned them, and platform-internal's Tokio stays
+optional.
+"""
 
 from __future__ import annotations
 
@@ -49,6 +59,73 @@ def dependency(
         return None
     candidate = dependencies.get(name)
     return candidate if isinstance(candidate, Mapping) else None
+
+
+# #850: what the always-on lifecycle observer and sync adapter need.
+ROOT_TOKIO_BASE_FEATURES = frozenset({"rt", "rt-multi-thread", "sync", "time"})
+# Features that must never be selected by the unconditional base dependency.
+# `process`/`net`/`signal` would add the mio I/O driver to every consumer;
+# `macros` a proc-macro build; `fs`/`io-std` blocking pools; `full` all of it.
+ROOT_TOKIO_FORBIDDEN_BASE_FEATURES = frozenset(
+    {
+        "full",
+        "net",
+        "fs",
+        "process",
+        "signal",
+        "macros",
+        "io-std",
+        "io-util",
+        "parking_lot",
+        "test-util",
+    }
+)
+# Heavy crates that must remain opt-in even though Tokio itself no longer is.
+ROOT_OPTIONAL_HEAVY_DEPENDENCIES = (
+    "tokio-util",
+    "bytes",
+    "futures-util",
+    "tracing",
+    "tracing-subscriber",
+    "rusqlite",
+)
+
+
+def check_root_tokio(root: Mapping[str, object], failures: list[str]) -> None:
+    tokio = dependency(root, "tokio")
+    if tokio is None:
+        failures.append("root must depend on Tokio for the actor runtime (#850)")
+        return
+    if tokio.get("optional") is True:
+        failures.append("root Tokio is unconditional since #850; do not re-gate it")
+    if tokio.get("default-features") is not False:
+        failures.append("root Tokio must opt out of default features")
+    selected = tokio.get("features")
+    if not isinstance(selected, list) or not all(isinstance(f, str) for f in selected):
+        failures.append("root Tokio must list its base features explicitly")
+        return
+    heavy = sorted(set(selected) & ROOT_TOKIO_FORBIDDEN_BASE_FEATURES)
+    if heavy:
+        failures.append(
+            "root Tokio base features must stay minimal; move "
+            + ", ".join(heavy)
+            + " behind an opt-in feature"
+        )
+    if set(selected) != ROOT_TOKIO_BASE_FEATURES:
+        failures.append(
+            "root Tokio base features must be exactly "
+            + ", ".join(sorted(ROOT_TOKIO_BASE_FEATURES))
+        )
+    for name in ROOT_OPTIONAL_HEAVY_DEPENDENCIES:
+        candidate = dependency(root, name)
+        if candidate is not None and candidate.get("optional") is not True:
+            failures.append(f"root {name} must remain optional")
+    core = feature_members(root, "core")
+    if core is None:
+        failures.append("root must keep the `core` feature name")
+    for feature in ("async-process", "kernel-substrate"):
+        if feature_members(root, feature) is None:
+            failures.append(f"root must keep the `{feature}` feature name")
 
 
 def version_at_least(requirement: object, minimum: tuple[int, int, int]) -> bool:
@@ -159,11 +236,12 @@ def check_manifests(
         failures.append(
             "root must opt out of platform defaults and select only Phase 0.5 containment"
         )
+    check_root_tokio(root, failures)
     require_feature(
         root,
         "async-process",
         {
-            "dep:tokio",
+            "tokio/process",
             "process-inspection",
             "running-process-platform-internal/async-process",
         },
@@ -252,8 +330,10 @@ class MinimalAsyncPlatformGraphTests(unittest.TestCase):
         root = tomllib.loads(
             """
             [features]
+            core = []
+            kernel-substrate = ["async-process"]
             async-process = [
-                "dep:tokio",
+                "tokio/process",
                 "process-inspection",
                 "running-process-platform-internal/async-process",
             ]
@@ -266,6 +346,7 @@ class MinimalAsyncPlatformGraphTests(unittest.TestCase):
                 "running-process-platform-internal/process-inspection",
             ]
             [dependencies]
+            tokio = { version = "1", default-features = false, features = ["rt", "rt-multi-thread", "sync", "time"] }
             [dependencies.running-process-platform-internal]
             version = "4.10.6"
             default-features = false
@@ -280,6 +361,41 @@ class MinimalAsyncPlatformGraphTests(unittest.TestCase):
         )
         assert "platform-internal Tokio must remain optional" in failures
         assert not any("build dependencies" in failure for failure in failures)
+        assert not any(failure.startswith("root") for failure in failures), failures
+
+    def test_root_tokio_base_features_cannot_grow(self) -> None:
+        for extra in ("net", "process", "macros", "full", "fs", "signal"):
+            with self.subTest(extra=extra):
+                root = load_manifest(ROOT_MANIFEST)
+                tokio = dict(root["dependencies"]["tokio"])
+                tokio["features"] = [*tokio["features"], extra]
+                root["dependencies"]["tokio"] = tokio
+                failures = check_manifests(
+                    load_manifest(INTERNAL_MANIFEST),
+                    root,
+                    build_script_exists=False,
+                    table=HASH_TABLE.read_text(encoding="utf-8"),
+                )
+                assert any("base features must stay minimal" in f for f in failures)
+
+    def test_root_tokio_cannot_be_regated_or_heavy_crates_made_unconditional(
+        self,
+    ) -> None:
+        root = load_manifest(ROOT_MANIFEST)
+        tokio = dict(root["dependencies"]["tokio"])
+        tokio["optional"] = True
+        root["dependencies"]["tokio"] = tokio
+        rusqlite = dict(root["dependencies"]["rusqlite"])
+        rusqlite.pop("optional")
+        root["dependencies"]["rusqlite"] = rusqlite
+        failures = check_manifests(
+            load_manifest(INTERNAL_MANIFEST),
+            root,
+            build_script_exists=False,
+            table=HASH_TABLE.read_text(encoding="utf-8"),
+        )
+        assert "root Tokio is unconditional since #850; do not re-gate it" in failures
+        assert "root rusqlite must remain optional" in failures
 
     def test_actual_build_dependencies_fail_even_when_a_comment_claims_none(
         self,
