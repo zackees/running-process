@@ -797,7 +797,18 @@ def legacy_ipc_violations(
 # #975: what "zero baseline" means. Every row that survives consolidation must
 # say why it stays; the classes live beside the ledger because the Dylint lint
 # include_str!s the ledger and skips any row without exactly four fields.
-ROW_CLASSES = {"host-test", "compat-4x"}
+#: `artifact-format` is host selection *by artifact format*: which symbol-file or
+#: unwind-table implementation applies to which target (a PDB reader on Windows,
+#: an object/DWARF reader elsewhere; `framehop`'s unwinder per architecture). It
+#: belongs to the probe artifact crates, whose whole job is per-format handling,
+#: and cannot move to the platform crate, which must never gain a symbol parser
+#: or injection dependency (the sidecar contract in CLAUDE.md). It is valid only
+#: there, so it cannot become a general escape hatch.
+ARTIFACT_FORMAT_PREFIXES = (
+    "crates/running-process-probe/src/snapshot/",
+    "crates/running-process-probe-worker/src/",
+)
+ROW_CLASSES = {"host-test", "compat-4x", "artifact-format"}
 
 
 def parse_classes(
@@ -826,6 +837,13 @@ def parse_classes(
             problems.append(f"{where}: a classification needs a note saying why")
         if row_class == "compat-4x" and "5.0" not in note:
             problems.append(f"{where}: a compat-4x note must name its 5.0 retirement")
+        if row_class == "artifact-format" and not source.startswith(
+            ARTIFACT_FORMAT_PREFIXES
+        ):
+            problems.append(
+                f"{where}: artifact-format is only valid in the probe artifact "
+                f"crates ({', '.join(ARTIFACT_FORMAT_PREFIXES)})"
+            )
         classes[key] = (row_class, note)
     return classes, problems
 
