@@ -13,11 +13,11 @@
 /// Off by default because it is not free: names come from a symbol-table walk,
 /// while line numbers parse a line program for every module in the capture. A
 /// caller that only wants "which function" should not pay for it.
-pub const LINE_NUMBERS_ENV: &str = "RUNNING_PROCESS_PROBE_LINE_NUMBERS";
+pub const LINE_NUMBERS_ENV: &str = crate::env_vars::PROBE_LINE_NUMBERS.name;
 
 /// Whether the caller asked for line numbers.
 pub fn line_numbers_requested() -> bool {
-    requested_from(std::env::var_os(LINE_NUMBERS_ENV))
+    requested_from(crate::env_vars::PROBE_LINE_NUMBERS.os())
 }
 
 /// The decision, separated from reading the environment.

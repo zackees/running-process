@@ -22,6 +22,8 @@
 #![deny(missing_docs)]
 
 pub mod discovery;
+/// Every environment variable the worker reads, declared in one place (#1101).
+pub mod env_vars;
 pub mod line_numbers;
 #[cfg(not(target_os = "windows"))]
 pub mod object_symbols;
