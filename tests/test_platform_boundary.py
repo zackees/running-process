@@ -4,11 +4,19 @@ import collections
 
 from ci import platform_boundary
 
+# The ledger only shrinks. This is a ceiling, not an exact pin: an exact number
+# made every row-removing PR edit this one line, so parallel PRs conflicted and
+# main went red when several merged against a stale count (#975). Growth is also
+# rejected independently -- a new occurrence fails the source scan and Dylint --
+# so the ceiling only has to be lowered when someone wants to lock a gain in.
+MAX_LEDGER_ROWS = 379
+
 
 def test_bootstrap_ledgers_are_valid() -> None:
     rows = platform_boundary.parse_ledger()
 
-    assert len(rows) == 429
+    assert rows
+    assert len(rows) <= MAX_LEDGER_ROWS
     assert not platform_boundary.validate_ledger(rows)
     assert not platform_boundary.manifest_dependency_violations()
     assert not platform_boundary.neutral_facade_contract_violations()
