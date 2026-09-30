@@ -345,8 +345,10 @@ class MinimalAsyncPlatformGraphTests(unittest.TestCase):
                 "dep:sysinfo",
                 "running-process-platform-internal/process-inspection",
             ]
-            [dependencies]
-            tokio = { version = "1", default-features = false, features = ["rt", "rt-multi-thread", "sync", "time"] }
+            [dependencies.tokio]
+            version = "1"
+            default-features = false
+            features = ["rt", "rt-multi-thread", "sync", "time"]
             [dependencies.running-process-platform-internal]
             version = "4.10.6"
             default-features = false
