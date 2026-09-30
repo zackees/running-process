@@ -325,8 +325,15 @@ def test_the_real_classifications_are_valid_and_cover_the_argued_rows() -> None:
     assert not platform_boundary.classification_violations(rows, classes, problems)
     classified = len(rows) - len(platform_boundary.unclassified_rows(rows, classes))
     # 24 tee-API rows + 1 environment.rs row (compat-4x) + 27 tests.rs rows
-    # (host-test): exactly the rows #975 has argued so far.
-    assert classified == 52
+    # (host-test) argued in the planning pass, plus every row provably inside
+    # test code; the count can only grow as phase 9 proceeds.
+    assert classified >= 52
+    tee = (
+        "crates/running-process/src/daemon/pty_sessions.rs",
+        "attr_cfg",
+        "unix",
+    )
+    assert classes[tee][0] == "compat-4x"
 
 
 def test_a_classification_naming_no_ledger_row_is_stale() -> None:
@@ -379,3 +386,61 @@ def test_unclassified_rows_are_counted_not_failed_yet() -> None:
 
     assert platform_boundary.unclassified_rows(rows, classes)
     assert "unclassified=" in platform_boundary.totals(rows)
+
+
+def test_the_shadow_tests_are_classified_because_they_sit_in_a_test_module() -> None:
+    classes, _ = platform_boundary.parse_classes()
+    key = (
+        "crates/running-process/src/daemon/shadow.rs",
+        "attr_cfg",
+        "target_os",
+    )
+
+    assert classes[key][0] == "host-test"
+
+
+def test_host_test_is_rejected_when_an_occurrence_is_outside_test_code() -> None:
+    source = (
+        "#[cfg(unix)]\nfn production() {}\n\n"
+        "#[cfg(test)]\nmod tests {\n    #[cfg(unix)]\n    fn checks() {}\n}\n"
+    )
+    key = ("crates/running-process/src/somewhere.rs", "attr_cfg", "unix")
+
+    violations = platform_boundary.host_test_violations(
+        {key: ("host-test", "why")}, {key[0]: source}
+    )
+
+    assert len(violations) == 1
+    assert "outside test code" in violations[0]
+
+
+def test_host_test_is_accepted_when_every_occurrence_is_in_a_test_module() -> None:
+    source = (
+        "fn production() {}\n\n"
+        "#[cfg(test)]\nmod tests {\n    #[cfg(unix)]\n    fn checks() {}\n}\n"
+    )
+    key = ("crates/running-process/src/somewhere.rs", "attr_cfg", "unix")
+
+    assert not platform_boundary.host_test_violations(
+        {key: ("host-test", "why")}, {key[0]: source}
+    )
+
+
+def test_a_whole_test_file_needs_no_test_module() -> None:
+    key = ("crates/running-process/src/foo/tests.rs", "attr_cfg", "unix")
+
+    assert not platform_boundary.host_test_violations(
+        {key: ("host-test", "why")}, {key[0]: "#[cfg(unix)]\nfn t() {}\n"}
+    )
+
+
+def test_braces_in_strings_do_not_unbalance_the_test_module_span() -> None:
+    code = platform_boundary.code_only(
+        "#[cfg(test)]\nmod tests {\n"
+        '    const S: &str = "}}}";\n'
+        "    #[cfg(unix)]\n    fn t() {}\n}\n"
+    )
+
+    spans = platform_boundary.test_module_spans(code)
+
+    assert spans == [(0, code.rindex("}") + 1)]

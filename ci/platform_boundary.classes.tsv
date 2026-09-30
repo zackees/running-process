@@ -24,3 +24,29 @@ crates/running-process/src/tests.rs	attr_cfg	unix	host-test	in-crate test assert
 crates/running-process/src/tests.rs	attr_cfg	windows	host-test	in-crate test asserting real host behaviour (signals, handles, job objects)
 crates/running-process/src/tests.rs	native_import	libc	host-test	in-crate test asserting real host behaviour (signals, handles, job objects)
 crates/running-process/src/tests.rs	native_import	std::os::windows	host-test	in-crate test asserting real host behaviour (signals, handles, job objects)
+crates/running-process-probe-daemon/src/crash_store/tests.rs	attr_cfg	target_os	host-test	test-only file; cfg/native use is the host-specific behaviour under test
+crates/running-process-probe-daemon/src/crash_store/tests.rs	attr_cfg	unix	host-test	test-only file; cfg/native use is the host-specific behaviour under test
+crates/running-process-probe-daemon/src/crash_store/tests.rs	attr_cfg	windows	host-test	test-only file; cfg/native use is the host-specific behaviour under test
+crates/running-process-probe-daemon/src/crash_store/tests.rs	native_import	libc	host-test	test-only file; cfg/native use is the host-specific behaviour under test
+crates/running-process-probe-daemon/src/crash_store/tests.rs	native_import	std::os::unix	host-test	test-only file; cfg/native use is the host-specific behaviour under test
+crates/running-process-probe/src/snapshot/attribute.rs	attr_cfg	windows	host-test	inside a #[cfg(test)] mod; cfg/native use is the host-specific behaviour under test
+crates/running-process-py/src/tests/control_churn.rs	attr_cfg	windows	host-test	test-only file; cfg/native use is the host-specific behaviour under test
+crates/running-process/src/bin/running-process-broker-v2/tests.rs	attr_cfg	windows	host-test	test-only file; cfg/native use is the host-specific behaviour under test
+crates/running-process/src/broker/client.rs	cfg_macro	windows	host-test	inside a #[cfg(test)] mod; cfg/native use is the host-specific behaviour under test
+crates/running-process/src/broker/client_v2.rs	cfg_macro	windows	host-test	inside a #[cfg(test)] mod; cfg/native use is the host-specific behaviour under test
+crates/running-process/src/broker/server/combined_service_def_loader/tests.rs	attr_cfg	windows	host-test	test-only file; cfg/native use is the host-specific behaviour under test
+crates/running-process/src/broker/server/session_serve_async/tests.rs	attr_cfg	unix	host-test	test-only file; cfg/native use is the host-specific behaviour under test
+crates/running-process/src/broker/server/spawn_coordinator.rs	attr_cfg	unix	host-test	inside a #[cfg(test)] mod; cfg/native use is the host-specific behaviour under test
+crates/running-process/src/broker/server/spawn_coordinator.rs	attr_cfg	windows	host-test	inside a #[cfg(test)] mod; cfg/native use is the host-specific behaviour under test
+crates/running-process/src/broker/session_relay/tests.rs	attr_cfg	unix	host-test	test-only file; cfg/native use is the host-specific behaviour under test
+crates/running-process/src/daemon/backend_endpoint/tests.rs	attr_cfg	unix	host-test	test-only file; cfg/native use is the host-specific behaviour under test
+crates/running-process/src/daemon/compile_session/tests.rs	attr_cfg	unix	host-test	test-only file; cfg/native use is the host-specific behaviour under test
+crates/running-process/src/daemon/compile_session/tests.rs	attr_cfg	windows	host-test	test-only file; cfg/native use is the host-specific behaviour under test
+crates/running-process/src/daemon/services.rs	attr_cfg	windows	host-test	inside a #[cfg(test)] mod; cfg/native use is the host-specific behaviour under test
+crates/running-process/src/daemon/session_endpoint/tests.rs	attr_cfg	unix	host-test	test-only file; cfg/native use is the host-specific behaviour under test
+crates/running-process/src/daemon/shadow.rs	attr_cfg	target_os	host-test	inside a #[cfg(test)] mod; cfg/native use is the host-specific behaviour under test
+crates/running-process/src/probe/client.rs	cfg_macro	windows	host-test	inside a #[cfg(test)] mod; cfg/native use is the host-specific behaviour under test
+crates/running-process/src/probe/mod.rs	cfg_macro	windows	host-test	inside a #[cfg(test)] mod; cfg/native use is the host-specific behaviour under test
+crates/running-process/src/process_runtime.rs	attr_cfg	windows	host-test	inside a #[cfg(test)] mod; cfg/native use is the host-specific behaviour under test
+crates/running-process/src/runpm_config.rs	attr_cfg	unix	host-test	inside a #[cfg(test)] mod; cfg/native use is the host-specific behaviour under test
+crates/running-process/src/runpm_config.rs	attr_cfg	windows	host-test	inside a #[cfg(test)] mod; cfg/native use is the host-specific behaviour under test
