@@ -183,7 +183,8 @@ running-process-daemon start|stop|status|list|kill-zombies
 
 **Environment variables:**
 - `RUNNING_PROCESS_NO_TRACKING=1` — disable daemon IPC
-- `RUNNING_PROCESS_DAEMON_SCOPE=dev` — CWD-scoped daemon for test isolation
+- `RUNNING_PROCESS_DAEMON_SCOPE=dev` — dev scope. running-process's own daemon paths do not act on it yet; it gates `content_hash::daemon_identity_stamp` (below). It is not the CWD-scoped daemon this line used to describe.
+- `RUNNING_PROCESS_DAEMON_IDENTITY_STAMP` — `<version>-<16 hex of the executable's blake3>`. Callers (soldr, zccache, fbuild, clud) get it from `daemon_identity_stamp(version)` / `daemon_identity_stamp_env(version)` and spell it into their own pipe and pid-file names so same-version dev builds stop displacing each other (#1252). Only read in dev scope; a safe inherited value is used as-is, so a process tree hashes once. The library never sets it in the environment: pass the returned pair to child `Command`s.
 - `RUST_LOG=debug` — daemon log level
 - `RUNNING_PROCESS_FAKE_BACKEND=<path>` — TEST-ONLY broker seam: `connect_to_backend` dials `<path>` directly, skipping broker negotiation entirely (never set in production; `RUNNING_PROCESS_DISABLE=1` takes precedence)
 - `RUNNING_PROCESS_BROKER_ALLOW_PRIVILEGED=1` — opt out of the broker-v2 "refuse privileged startup" guard (test-only; defaults to refusing root)

@@ -332,6 +332,9 @@ declare! {
     CLIENT_RPC_TIMEOUT_MS => "RUNNING_PROCESS_CLIENT_RPC_TIMEOUT_MS",
         EnvKind::Number { zero_selects_default: true }, Owner::Crate, "the built-in RPC timeout",
         "Daemon client RPC timeout, in milliseconds.";
+    DAEMON_IDENTITY_STAMP => "RUNNING_PROCESS_DAEMON_IDENTITY_STAMP",
+        EnvKind::Text, Owner::Crate, "a dev-scope daemon computes it from its own executable",
+        "Dev-scope daemon identity stamp, `<version>-<16 hex of the executable's blake3>`; ignored outside dev scope.";
     DAEMON_SCOPE => "RUNNING_PROCESS_DAEMON_SCOPE",
         EnvKind::Text, Owner::Crate, "the user-wide scope",
         "Daemon scope selector; `dev` gives a CWD-scoped daemon for tests.";

@@ -238,7 +238,7 @@ pub use console_detect::{monitor_console_windows, ConsoleWindowInfo};
 pub use containment::{ContainedProcessGroup, ORIGINATOR_ENV_VAR};
 // #891: content-hash primitive for dev daemon-identity isolation.
 #[cfg(feature = "client")]
-pub use content_hash::blake3_file;
+pub use content_hash::{blake3_file, daemon_identity_stamp, daemon_identity_stamp_env};
 pub use observer::{
     CapabilitySupport, CaptureSource, CategoryCapability, DumpResult, EventCategory,
     ObservationGrade, ObservationPolicy, ObserverCapabilities, ObserverConfig, ObserverEvent,
