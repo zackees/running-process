@@ -1,3 +1,5 @@
+# `running-process` -> interprocess: published 4.x compat surface (see LEGACY_IPC_ALLOWANCE in
+# ci/platform_boundary.py); this row retires in 5.0 together with `into_legacy_ipc_stream`.
 # Phase 2 manifest-boundary bootstrap ledger. Schema: crate<TAB>kind<TAB>construct.
 running-process	native_dependency	interprocess
 running-process	native_dependency	libc
