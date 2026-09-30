@@ -16,8 +16,6 @@ crates/running-process-probe-daemon/src/crash_store/tests.rs	native_import	std::
 crates/running-process-probe-daemon/src/discovery.rs	attr_cfg	unix	0
 crates/running-process-probe-daemon/src/discovery.rs	native_import	std::os::unix	0
 crates/running-process-probe-daemon/src/discovery.rs	native_import	std::os::unix	1
-crates/running-process-probe-daemon/src/names.rs	attr_cfg	unix	0
-crates/running-process-probe-daemon/src/names.rs	attr_cfg	windows	0
 crates/running-process-probe-daemon/src/names.rs	cfg_macro	target_os	0
 crates/running-process-probe-worker/src/discovery.rs	attr_cfg	unix	0
 crates/running-process-probe-worker/src/discovery.rs	attr_cfg	windows	0

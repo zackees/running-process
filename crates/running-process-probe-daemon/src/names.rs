@@ -37,21 +37,12 @@ pub fn resolve_socket_path(bare_name: &str) -> String {
 }
 
 /// Wrap a resolved path in interprocess's platform-appropriate `Name`.
+///
+/// Which flavour that is (a filesystem path on Unix, a namespaced pipe name on
+/// Windows) is the platform facade's choice, not this crate's.
 pub fn wrap_socket_name(socket_path: &str) -> io::Result<interprocess::local_socket::Name<'_>> {
-    use interprocess::local_socket::prelude::*;
-    #[cfg(windows)]
-    {
-        use interprocess::local_socket::GenericNamespaced;
-        let bare = socket_path
-            .strip_prefix(r"\\.\pipe\")
-            .unwrap_or(socket_path);
-        bare.to_ns_name::<GenericNamespaced>()
-    }
-    #[cfg(unix)]
-    {
-        use interprocess::local_socket::GenericFilePath;
-        socket_path.to_fs_name::<GenericFilePath>()
-    }
+    running_process_platform_internal::legacy_ipc_name(socket_path)
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))
 }
 
 /// Classify a bind failure as "someone else already owns this endpoint".
@@ -105,6 +96,15 @@ mod tests {
             io::ErrorKind::NotFound,
             "missing"
         )));
+    }
+
+    #[test]
+    fn a_resolved_socket_path_wraps_into_an_interprocess_name_on_every_host() {
+        // The flavour (filesystem path vs namespaced pipe) is the platform
+        // facade's choice; this only pins that what `resolve_socket_path`
+        // produces is always accepted, whichever host that is.
+        let path = resolve_socket_path(&probe_pipe_name("0123456789abcdef", 0));
+        assert!(wrap_socket_name(&path).is_ok(), "{path}");
     }
 
     #[test]

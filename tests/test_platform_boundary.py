@@ -9,7 +9,7 @@ from ci import platform_boundary
 # main went red when several merged against a stale count (#975). Growth is also
 # rejected independently -- a new occurrence fails the source scan and Dylint --
 # so the ceiling only has to be lowered when someone wants to lock a gain in.
-MAX_LEDGER_ROWS = 266
+MAX_LEDGER_ROWS = 264
 
 
 def test_bootstrap_ledgers_are_valid() -> None:
