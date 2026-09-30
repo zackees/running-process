@@ -15,3 +15,4 @@ mod async_parity_test;
 mod async_process_session_test;
 mod async_process_test;
 mod async_semantic_capture;
+mod sync_inside_tokio_test;
