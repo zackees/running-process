@@ -844,6 +844,99 @@ def classification_violations(
         violations.append(
             f"stale classification: {key[0]} {key[1]} {key[2]} is not in the ledger"
         )
+    violations.extend(
+        host_test_violations({k: v for k, v in classes.items() if k in identities})
+    )
+    return violations
+
+
+def is_test_file(path: str) -> bool:
+    """Whether the whole file is test code, by the repo's naming conventions."""
+    name = path.rsplit("/", 1)[-1]
+    return (
+        "/tests/" in path
+        or name == "tests.rs"
+        or name.endswith(("_tests.rs", "_test.rs"))
+    )
+
+
+CFG_TEST_MOD = re.compile(
+    r"#\s*\[\s*cfg\s*\(\s*test\s*\)\s*\]\s*(?:pub\s+)?mod\s+\w+\s*\{"
+)
+
+
+def test_module_spans(code: str) -> list[tuple[int, int]]:
+    """Character spans of every ``#[cfg(test)] mod name { ... }`` in ``code``.
+
+    ``code`` must already be comment- and string-free (``code_only``), so a
+    brace inside a literal cannot unbalance the match.
+    """
+    spans = []
+    for match in CFG_TEST_MOD.finditer(code):
+        depth, index = 1, match.end()
+        while index < len(code) and depth:
+            depth += {"{": 1, "}": -1}.get(code[index], 0)
+            index += 1
+        spans.append((match.start(), index))
+    return spans
+
+
+def occurrence_offsets(text: str, kind: str, normalized: str) -> list[int]:
+    """Character offsets in ``text`` of each occurrence of one ledger identity."""
+    code = code_only(text)
+    offsets = []
+    if kind in {"attr_cfg", "cfg_macro"}:
+        pattern = ATTRIBUTE_CFG if kind == "attr_cfg" else CFG_MACRO
+        for match in pattern.finditer(code):
+            for ident in IDENTIFIER.finditer(match.group(1)):
+                if ident.group(0) == normalized:
+                    offsets.append(match.start(1) + ident.start())
+    elif kind == "native_import":
+        for match in [*NATIVE_PATH.finditer(code), *NATIVE_ROOT.finditer(code)]:
+            spelled = (
+                f"std::os::{match.group(1)}"
+                if match.re is NATIVE_PATH
+                else match.group(1)
+            )
+            if spelled == normalized:
+                offsets.append(match.start())
+    else:
+        for match in CONCRETE_MODULE.finditer(code):
+            if match.group(1) == normalized:
+                offsets.append(match.start())
+    return offsets
+
+
+def host_test_violations(
+    classes: dict[tuple[str, str, str], tuple[str, str]],
+    texts: dict[str, str] | None = None,
+) -> list[str]:
+    """A ``host-test`` identity must have every occurrence in test code.
+
+    Without this the class is a label anyone can attach to anything. A test
+    file counts whole; otherwise each occurrence must sit inside a top-level
+    ``#[cfg(test)] mod``.
+    """
+    violations = []
+    for (path, kind, normalized), (row_class, _) in sorted(classes.items()):
+        if row_class != "host-test" or is_test_file(path):
+            continue
+        text = (
+            texts[path]
+            if texts is not None and path in texts
+            else (ROOT / path).read_text(encoding="utf-8")
+        )
+        spans = test_module_spans(code_only(text))
+        outside = [
+            offset
+            for offset in occurrence_offsets(text, kind, normalized)
+            if not any(start <= offset < end for start, end in spans)
+        ]
+        if outside:
+            violations.append(
+                f"{path} {kind} {normalized}: classified host-test but "
+                f"{len(outside)} occurrence(s) are outside test code"
+            )
     return violations
 
 
