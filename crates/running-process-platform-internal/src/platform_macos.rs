@@ -77,6 +77,11 @@ pub use host::{
 };
 pub use host::login_environment_block as host_login_environment_block;
 
+/// macOS has no control groups.
+pub fn host_process_cgroup() -> Option<io::Result<String>> {
+    None
+}
+
 #[cfg(feature = "fs")]
 #[path = "platform_macos/fs.rs"]
 pub(crate) mod fs;

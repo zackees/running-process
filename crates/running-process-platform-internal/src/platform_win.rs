@@ -80,6 +80,11 @@ pub use host::{
 };
 pub use host::login_environment_block as host_login_environment_block;
 
+/// Windows has no control groups.
+pub fn host_process_cgroup() -> Option<io::Result<String>> {
+    None
+}
+
 #[cfg(feature = "fs")]
 #[path = "platform_win/fs.rs"]
 pub(crate) mod fs;

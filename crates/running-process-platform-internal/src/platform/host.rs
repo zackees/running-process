@@ -12,7 +12,8 @@ pub use crate::{
     host_environment_keys_are_case_insensitive as environment_keys_are_case_insensitive,
     host_filesystem_device_id as filesystem_device_id, host_hostname as hostname,
     host_login_environment as login_environment, host_machine_id as machine_id,
-    host_namespace_id as namespace_id, host_user_machine_identity as user_machine_identity,
+    host_namespace_id as namespace_id, host_process_cgroup as process_cgroup,
+    host_user_machine_identity as user_machine_identity,
     HostPrivilegedIdentity as PrivilegedIdentity,
 };
 
@@ -204,6 +205,16 @@ mod tests {
             let no_boot = dir.join("absent-boot").to_string_lossy().into_owned();
             assert!(machine_id_from(&[&missing], &no_boot).is_err());
             let _ = std::fs::remove_dir_all(&dir);
+        }
+    }
+
+    /// Where the host has control groups, this process belongs to one and can
+    /// read it; where it has none, the answer says so rather than erroring.
+    #[test]
+    fn process_cgroup_is_readable_where_the_host_has_cgroups() {
+        if let Some(membership) = process_cgroup() {
+            let text = membership.expect("own cgroup membership must be readable");
+            assert!(!text.trim().is_empty(), "empty cgroup membership");
         }
     }
 
