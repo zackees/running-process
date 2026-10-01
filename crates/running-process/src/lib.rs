@@ -307,7 +307,6 @@ pub use window_icon::{
     IconSupport, StockIcon,
 };
 
-#[cfg(unix)]
 pub(crate) use helpers::child_try_wait_error_is_retryable;
 #[cfg(test)]
 pub(crate) use helpers::exit_code;
@@ -957,78 +956,44 @@ impl NativeProcess {
 
     fn kill_impl(&self) -> Result<(), ProcessError> {
         crate::rp_rust_debug_scope!("running_process::NativeProcess::kill");
-        #[cfg(windows)]
-        {
-            let mut guard = self.child.lock().expect("child mutex poisoned");
-            let child = guard.as_mut().ok_or(ProcessError::NotRunning)?;
+        let deadline = kill_drain_deadline();
+        let (pid, already_reaped) = {
+            let mut state = self.child.lock().expect("child mutex poisoned");
+            let child = state.as_mut().ok_or(ProcessError::NotRunning)?;
             let pid = child.id();
-            child.kill().map_err(ProcessError::Io)?;
-            let code = child.wait_code().map_err(ProcessError::Io)?;
+            if let Some(code) = child.try_wait_code().map_err(ProcessError::Io)? {
+                (pid, Some(code))
+            } else {
+                // Group-wide when the child leads its own group
+                // (`create_process_group`) and the host can signal groups,
+                // otherwise the direct child.
+                child.kill_group_or_child().map_err(ProcessError::Io)?;
+                (pid, None)
+            }
+        };
+
+        // Wake capture readers immediately after the kill. In particular, this
+        // prevents a surviving pipe-owning descendant (FastLED Bug B: `uv`
+        // spawns a `python` grandchild that inherits the pipe and outlives it)
+        // from extending the bounded reap window, and wakes a blocked
+        // `read()` in microseconds rather than at the drain deadline.
+        self.cancel_capture_io();
+        let reaped = already_reaped.or_else(|| self.await_exit_until(deadline));
+        if let Some(code) = reaped {
             self.set_returncode(code);
             // Phase 1 of #221: a killed child still produces a lifecycle
             // `exited` event (guarded against double-emit by the waiter).
             self.shared.emit_exited(pid, code);
         }
-        #[cfg(unix)]
-        {
-            let deadline = kill_drain_deadline();
-            let (pid, already_reaped) = {
-                let mut state = self.child.lock().expect("child mutex poisoned");
-                let child = state.as_mut().ok_or(ProcessError::NotRunning)?;
-                let pid = child.id();
-                if let Some(code) = child.try_wait_code().map_err(ProcessError::Io)? {
-                    (pid, Some(code))
-                } else {
-                    // Group-wide when the child leads its own group
-                    // (`create_process_group`), otherwise the direct child.
-                    child.kill_group_or_child().map_err(ProcessError::Io)?;
-                    (pid, None)
-                }
-            };
-
-            // Wake capture readers immediately after signal delivery. In
-            // particular, this prevents a surviving pipe-owning descendant
-            // from extending the bounded reap window.
-            self.cancel_capture_io();
-            // #850: the lifecycle task on the actor runtime is the reaper, and
-            // it publishes the exit on the watch channel. Wait there rather than
-            // running a second 10 ms `try_wait` loop of our own.
-            let reaped = already_reaped.or_else(|| self.await_exit_until(deadline));
-            if let Some(code) = reaped {
-                self.set_returncode(code);
-                self.shared.emit_exited(pid, code);
-            }
-            public_symbols::rp_native_process_wait_for_capture_completion_with_deadline_public(
-                self, deadline,
-            );
-            Ok(())
-        }
-        #[cfg(windows)]
-        {
-            // Interrupt any pending capture `read()` in the per-stream reader
-            // threads so they fall out of their loops immediately. This is what
-            // makes the grandchild-pipe-orphan
-            // case (FastLED Bug B: uv.exe spawns a python.exe grandchild
-            // that inherits the pipe and outlives uv) wake up in
-            // microseconds instead of waiting for the bounded-drain
-            // safety-net deadline below.
-            self.cancel_capture_io();
-            // Synchronize with the per-stream reader threads so that by the
-            // time kill() returns, the capture queues have flipped from
-            // "blocked on read" to "closed" and downstream pollers (e.g.
-            // take_combined_line) observe EOS instead of timeout. Without
-            // this, callers that hit a wait()-timeout path see Python code
-            // raise TimeoutError, kill the child, then race the reader
-            // threads — a 10ms poll loop can miss the EOS flip entirely.
-            //
-            // The deadline remains a safety-net if the platform wake mechanism
-            // does not fire.
-            public_symbols::rp_native_process_wait_for_capture_completion_with_deadline_public(
-                self,
-                kill_drain_deadline(),
-            );
-            Ok(())
-        }
+        // Synchronize with the per-stream reader threads so that by the time
+        // kill() returns, the capture queues have flipped from "blocked on
+        // read" to "closed" and downstream pollers (e.g. take_combined_line)
+        // observe EOS instead of timeout. The deadline remains a safety net
+        // if the platform wake mechanism does not fire.
+        public_symbols::rp_native_process_wait_for_capture_completion_with_deadline_public(
+            self, deadline,
+        );
+        Ok(())
     }
 
     /// Wait for the lifecycle task to publish the child's exit, up to
@@ -1652,7 +1617,6 @@ fn observe_child_exit(child: &Mutex<Option<ChildState>>, shared: &SharedState) -
             ExitObservation::Exited
         }
         Ok(None) => ExitObservation::Running,
-        #[cfg(unix)]
         Err(error) if child_try_wait_error_is_retryable(&error) => ExitObservation::Running,
         Err(_) => ExitObservation::Gone,
     }

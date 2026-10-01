@@ -67,3 +67,5 @@ crates/running-process-probe/src/snapshot/unwind.rs	cfg_macro	target_arch	artifa
 crates/running-process-probe-daemon/src/names.rs	cfg_macro	target_os	host-test	in-crate test asserting the host's real socket leaf (a hashed .sock leaf on macOS, the bare name elsewhere)
 crates/running-process-probe-daemon/src/discovery.rs	attr_cfg	unix	host-test	Unix-only test asserting the discovery file is created owner-only (mode 0600)
 crates/running-process-probe-daemon/src/discovery.rs	native_import	std::os::unix	host-test	Unix-only test asserting the discovery file is created owner-only (mode 0600)
+crates/running-process/src/lib.rs	attr_cfg	unix	compat-4x	Unix-only public re-exports (unix_set_priority, unix_signal_process, unix_signal_process_group, UnixSignal) are published 4.x surface; 5.0 replaces them with host-neutral platform::process calls (#975)
+crates/running-process/src/lib.rs	attr_cfg	target_os	compat-4x	Linux-only public current_executable_build_id export is published 4.x surface; 5.0 makes it host-neutral with an Unsupported answer elsewhere (#975)

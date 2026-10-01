@@ -215,10 +215,10 @@ impl ArtifactPaths {
     /// Derive every expected location from the environment, read-only.
     pub fn from_environment(scope_hash: Option<&str>) -> Self {
         let endpoint = paths::socket_path_view(scope_hash);
-        let socket = if cfg!(windows) {
-            SocketLocation::NamedPipe(endpoint)
-        } else {
+        let socket = if crate::platform::ipc::endpoint_is_filesystem_backed() {
             SocketLocation::File(PathBuf::from(endpoint))
+        } else {
+            SocketLocation::NamedPipe(endpoint)
         };
         let data_dir = paths::data_dir();
         Self {
