@@ -232,7 +232,6 @@ pub mod terminal_graphics;
 mod types;
 #[cfg(unix)]
 mod unix;
-#[cfg(windows)]
 mod windows;
 
 #[cfg(feature = "async-process")]
@@ -318,7 +317,6 @@ pub use running_process_platform_internal::ProcessPriority;
 pub use running_process_platform_internal::SpawnAdmission;
 #[cfg(unix)]
 pub use unix::{unix_set_priority, unix_signal_process, unix_signal_process_group, UnixSignal};
-#[cfg(windows)]
 pub(crate) use windows::{assign_child_to_windows_kill_on_close_job_impl, WindowsJobHandle};
 
 #[macro_export]
@@ -660,33 +658,33 @@ impl NativeProcess {
         // associate an IOCP with the per-spawn Job Object so a pump thread
         // can forward descendant lifecycle events. The Lifecycle category
         // is still served by emit_started / emit_exited above and below.
-        #[cfg(windows)]
-        {
+        // Hosts without Job Objects answer `Unsupported`, which means there is
+        // nothing to contain; an exact-trace child has no standard handle to
+        // assign.
+        let job_result = child.std_child().map(|standard_child| {
             let descendant_sink = self
                 .shared
                 .observer
                 .as_ref()
                 .and_then(|e| e.descendant_sink());
-            let standard_child = child
-                .std_child()
-                .expect("Windows exact tracing is unavailable");
-            let job_result =
-                public_symbols::rp_assign_child_to_windows_kill_on_close_job_with_observer_public(
-                    standard_child,
-                    descendant_sink,
-                    self.process_watch.clone(),
-                    standard_child.id(),
-                    self.config.address_space_limit_bytes,
-                );
-            match job_result {
-                Ok(job) => child.attach_job(job),
-                Err(error) => {
-                    if let Some(watch) = self.process_watch.as_ref() {
-                        watch.close();
-                    }
-                    cleanup_child_after_start_error(child);
-                    return Err(ProcessError::Spawn(error));
+            public_symbols::rp_assign_child_to_windows_kill_on_close_job_with_observer_public(
+                standard_child,
+                descendant_sink,
+                self.process_watch.clone(),
+                standard_child.id(),
+                self.config.address_space_limit_bytes,
+            )
+        });
+        match job_result {
+            None => {}
+            Some(Ok(job)) => child.attach_job(job),
+            Some(Err(error)) if error.kind() == std::io::ErrorKind::Unsupported => {}
+            Some(Err(error)) => {
+                if let Some(watch) = self.process_watch.as_ref() {
+                    watch.close();
                 }
+                cleanup_child_after_start_error(child);
+                return Err(ProcessError::Spawn(error));
             }
         }
         if !exact_trace {
