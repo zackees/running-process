@@ -79,7 +79,14 @@ the fix is to put the mechanism behind `platform::*`, not to add a class.
 `MAX_LEDGER_ROWS` in `tests/test_platform_boundary.py` is a ceiling that only
 moves down. `--print-totals` reports rows / classified / unclassified.
 
+Seeded violations, one per forbidden family, each of which must fail:
+
+- host `cfg` attribute and native import: `lints/running-process-platform-boundary/ui/main.rs`;
+- host `cfg!` macro: `ui/cfg_macro.rs`;
+- a host branch the ledger does not know: `test_a_host_branch_missing_from_the_ledger_is_rejected_by_the_source_scan`;
+- a new or dropped native manifest dependency: the two `manifest` tests in `tests/test_platform_boundary.py`;
+- a new `interprocess` use or a grown allowance, an unclassified or mis-classed row, and a zone claiming more than its artifact: the existing tests in the same file.
+
 Not done yet against #975's literal acceptance list: the ledger and the Dylint
 dump escape hatch (`RUNNING_PROCESS_PLATFORM_BOUNDARY_DUMP_DIR`) still exist,
-and the seeded-violation fixtures per forbidden family and the #965 final
-report are open.
+and the #965 final report is open.

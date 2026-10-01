@@ -509,3 +509,48 @@ def test_the_probe_format_selectors_are_classified_as_artifact_format() -> None:
     assert not problems
     assert classes[(unwind, "attr_cfg", "target_arch")][0] == "artifact-format"
     assert classes[(symbolize, "attr_cfg", "target_os")][0] == "artifact-format"
+
+
+def test_a_new_native_dependency_in_a_manifest_is_rejected() -> None:
+    from unittest import mock
+
+    observed = platform_boundary.manifest_occurrences()
+    seeded = observed.copy()
+    seeded[
+        ("crates/running-process/Cargo.toml", "native_dependency", "seeded-dep")
+    ] += 1
+
+    with mock.patch.object(
+        platform_boundary, "manifest_occurrences", return_value=seeded
+    ):
+        problems = platform_boundary.manifest_dependency_violations()
+
+    assert any(
+        "new manifest boundary occurrence" in problem and "seeded-dep" in problem
+        for problem in problems
+    )
+
+
+def test_a_dropped_manifest_occurrence_must_be_removed_from_the_ledger() -> None:
+    from unittest import mock
+
+    observed = platform_boundary.manifest_occurrences()
+    key = next(iter(sorted(observed)))
+    seeded = observed.copy()
+    seeded[key] -= 1
+
+    with mock.patch.object(
+        platform_boundary, "manifest_occurrences", return_value=seeded
+    ):
+        problems = platform_boundary.manifest_dependency_violations()
+
+    assert any("stale manifest boundary occurrence" in problem for problem in problems)
+
+
+def test_a_host_branch_missing_from_the_ledger_is_rejected_by_the_source_scan() -> None:
+    rows = platform_boundary.parse_ledger()
+    seeded = [row for row in rows if row != rows[0]]
+
+    problems = platform_boundary.source_scan_violations(seeded)
+
+    assert any("new locally-scanned occurrence" in problem for problem in problems)
