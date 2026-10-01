@@ -853,11 +853,23 @@ def classification_violations(
     classes: dict[tuple[str, str, str], tuple[str, str]] | None = None,
     problems: list[str] | None = None,
 ) -> list[str]:
-    """Reject malformed classifications and ones that name no ledger row."""
+    """Reject malformed classifications, stale ones, and unclassified rows.
+
+    Zero baseline (#975) means every ledger row says why it stays, so a row
+    with no class is a failure, not a count.
+    """
     if classes is None:
         classes, problems = parse_classes()
     violations = list(problems or [])
     identities = {(row.path, row.kind, row.normalized) for row in rows}
+    for key in sorted(
+        {(r.path, r.kind, r.normalized) for r in unclassified_rows(rows, classes)}
+    ):
+        violations.append(
+            f"unclassified row: {key[0]} {key[1]} {key[2]} needs a class in "
+            "ci/platform_boundary.classes.tsv, or its host branch must move "
+            "behind platform::*"
+        )
     for key in sorted(set(classes) - identities):
         violations.append(
             f"stale classification: {key[0]} {key[1]} {key[2]} is not in the ledger"
