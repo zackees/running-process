@@ -16,3 +16,4 @@ mod async_process_session_test;
 mod async_process_test;
 mod async_semantic_capture;
 mod sync_inside_tokio_test;
+mod sync_with_async_cursor_test;
