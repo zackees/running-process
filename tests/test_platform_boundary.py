@@ -520,7 +520,9 @@ def test_a_new_native_dependency_in_a_manifest_is_rejected() -> None:
         ("crates/running-process/Cargo.toml", "native_dependency", "seeded-dep")
     ] += 1
 
-    with mock.patch.object(platform_boundary, "manifest_occurrences", lambda: seeded):
+    with mock.patch.object(
+        platform_boundary, "manifest_occurrences", return_value=seeded
+    ):
         problems = platform_boundary.manifest_dependency_violations()
 
     assert any(
@@ -537,7 +539,9 @@ def test_a_dropped_manifest_occurrence_must_be_removed_from_the_ledger() -> None
     seeded = observed.copy()
     seeded[key] -= 1
 
-    with mock.patch.object(platform_boundary, "manifest_occurrences", lambda: seeded):
+    with mock.patch.object(
+        platform_boundary, "manifest_occurrences", return_value=seeded
+    ):
         problems = platform_boundary.manifest_dependency_violations()
 
     assert any("stale manifest boundary occurrence" in problem for problem in problems)
