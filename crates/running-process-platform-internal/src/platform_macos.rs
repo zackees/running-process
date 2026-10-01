@@ -831,6 +831,23 @@ pub(crate) fn observe_owned_child_exit(pid: i32) -> io::Result<Option<i32>> {
     Ok(Some(if info.si_code == libc::CLD_EXITED { status } else { 128 + status }))
 }
 
+/// Apply a process priority expressed as a Unix nice value.
+pub fn apply_process_priority(pid: u32, nice: i32) -> io::Result<()> {
+    unix_set_priority(pid, nice)
+}
+
+/// Deliver the host's interactive-interrupt request to `pid`.
+///
+/// Unix sends SIGINT to the process, or to its group when the child leads one.
+/// `creationflags` only matters on Windows and is ignored here.
+pub fn send_interrupt(pid: u32, _creationflags: Option<u32>, create_process_group: bool) -> io::Result<()> {
+    use crate::platform::process::UnixSignalKind;
+    if create_process_group {
+        unix_signal_process_group(pid as i32, UnixSignalKind::Interrupt)
+    } else {
+        unix_signal_process(pid, UnixSignalKind::Interrupt)
+    }
+}
 pub fn unix_signal_process_group(pid: i32, signal: crate::platform::process::UnixSignalKind) -> io::Result<()> {
     if unsafe { libc::killpg(pid, unix_signal_raw(signal)) } == -1 { Err(io::Error::last_os_error()) } else { Ok(()) }
 }
@@ -1264,6 +1281,22 @@ pub(crate) async fn shutdown_output_reader<R>(reader: R, _pending: bool) -> std:
 /// either is a visible, reviewed edit rather than a silent behaviour change.
 #[cfg(test)]
 mod host_semantics_tests {
+    const ABSENT_PID: u32 = 0x7fff_fffe;
+
+    #[test]
+    fn priority_on_absent_pid_reports_the_os_error() {
+        assert!(super::apply_process_priority(ABSENT_PID, 0).is_err());
+    }
+
+    #[test]
+    fn interrupt_ignores_creation_flags_and_reports_absent_pid() {
+        // Unix has no CREATE_NEW_PROCESS_GROUP prerequisite: flags never
+        // short-circuit the signal, so the OS answers for a missing pid.
+        let error = super::send_interrupt(ABSENT_PID, None, false).unwrap_err();
+        assert_ne!(error.kind(), std::io::ErrorKind::InvalidInput);
+        assert!(super::send_interrupt(ABSENT_PID, Some(0), true).is_err());
+    }
+
     #[test]
     fn open_handles_block_removal_matches_this_host() {
         assert!(!super::fs_open_handles_block_removal());

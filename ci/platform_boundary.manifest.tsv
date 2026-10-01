@@ -22,4 +22,3 @@ running-process-probe-daemon	target_dependency_table	target
 running-process-probe-worker	target_dependency_table	target
 running-process-probe-worker	target_dependency_table	target
 running-process-py	native_dependency	libc
-running-process-py	native_dependency	winapi

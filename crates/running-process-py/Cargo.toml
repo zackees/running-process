@@ -24,7 +24,6 @@ running-process = { path = "../running-process", version = "4.10.15", features =
 pyo3-async-runtimes = { version = "0.29", features = ["tokio-runtime"] }
 tokio = { version = "1", default-features = false, features = ["sync"] }
 sysinfo = "0.30"
-winapi = { version = "0.3", features = ["consoleapi", "handleapi", "jobapi2", "processenv", "processthreadsapi", "synchapi", "winbase", "wincon", "winnt", "winuser"] }
 prost = "0.14"
 # Supplies the probe_diag.v1 prost enums and the all-thread snapshot API.
 # default-features = false keeps the crate's injection vehicles (gated on its

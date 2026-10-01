@@ -7,12 +7,13 @@ use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyDict, PyString};
 use regex::Regex;
 
-#[cfg(unix)]
-use running_process::{unix_signal_process, unix_signal_process_group, UnixSignal};
 use running_process::{
     NativeProcess, ObservationPolicy, ProcessConfig, ProcessEventKind, ProcessWatch,
     ProcessWatchCursor, ProcessWatchMatch, ProcessWatchRead, ProcessWatchSubscriber, ReadStatus,
     StackCapture, StackDump, StreamEvent, StreamKind,
+};
+use running_process_platform_internal::platform::process::{
+    unix_signal_process_group, UnixSignalKind,
 };
 
 use crate::helpers::{
@@ -264,9 +265,7 @@ pub(crate) struct NativeRunningProcess {
     pub(crate) text: bool,
     pub(crate) encoding: Option<String>,
     pub(crate) errors: Option<String>,
-    #[cfg(windows)]
     pub(crate) creationflags: Option<u32>,
-    #[cfg(unix)]
     pub(crate) create_process_group: bool,
     pub(crate) owns_process_group: bool,
 }
@@ -364,9 +363,7 @@ impl NativeRunningProcess {
             text,
             encoding,
             errors,
-            #[cfg(windows)]
             creationflags,
-            #[cfg(unix)]
             create_process_group,
             owns_process_group: create_process_group,
         })
@@ -470,15 +467,16 @@ impl NativeRunningProcess {
     }
 
     pub(crate) fn terminate_group(&self) -> PyResult<()> {
-        #[cfg(unix)]
-        {
+        if self.create_process_group {
             let pid = self
                 .inner
                 .pid()
                 .ok_or_else(|| PyRuntimeError::new_err("process is not running"))?;
-            if self.create_process_group {
-                unix_signal_process_group(pid as i32, UnixSignal::Terminate).map_err(to_py_err)?;
-                return Ok(());
+            match unix_signal_process_group(pid as i32, UnixSignalKind::Terminate) {
+                Ok(()) => return Ok(()),
+                // Hosts without group signals fall back to the direct child.
+                Err(error) if error.kind() == std::io::ErrorKind::Unsupported => {}
+                Err(error) => return Err(to_py_err(error)),
             }
         }
         self.inner.terminate().map_err(to_py_err)
@@ -504,15 +502,16 @@ impl NativeRunningProcess {
     }
 
     pub(crate) fn kill_group(&self) -> PyResult<()> {
-        #[cfg(unix)]
-        {
+        if self.create_process_group {
             let pid = self
                 .inner
                 .pid()
                 .ok_or_else(|| PyRuntimeError::new_err("process is not running"))?;
-            if self.create_process_group {
-                unix_signal_process_group(pid as i32, UnixSignal::Kill).map_err(to_py_err)?;
-                return Ok(());
+            match unix_signal_process_group(pid as i32, UnixSignalKind::Kill) {
+                Ok(()) => return Ok(()),
+                // Hosts without group signals fall back to the direct child.
+                Err(error) if error.kind() == std::io::ErrorKind::Unsupported => {}
+                Err(error) => return Err(to_py_err(error)),
             }
         }
         self.inner.kill().map_err(to_py_err)
@@ -745,21 +744,11 @@ impl NativeRunningProcess {
             .inner
             .pid()
             .ok_or_else(|| PyRuntimeError::new_err("process is not running"))?;
-
-        #[cfg(windows)]
-        {
-            public_symbols::rp_windows_generate_console_ctrl_break_public(pid, self.creationflags)
-        }
-
-        #[cfg(unix)]
-        {
-            if self.create_process_group {
-                unix_signal_process_group(pid as i32, UnixSignal::Interrupt).map_err(to_py_err)?;
-            } else {
-                unix_signal_process(pid, UnixSignal::Interrupt).map_err(to_py_err)?;
-            }
-            Ok(())
-        }
+        public_symbols::rp_windows_generate_console_ctrl_break_public(
+            pid,
+            self.creationflags,
+            self.create_process_group,
+        )
     }
 
     pub(crate) fn decode_line_to_string(&self, py: Python<'_>, line: &[u8]) -> PyResult<String> {
