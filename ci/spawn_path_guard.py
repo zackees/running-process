@@ -252,6 +252,12 @@ ALLOWED_RUST_SPAWN = {
     # one sync-adapter future on the process-global runtime. It never starts
     # a child process; NativeProcess spawning stays in the reviewed path.
     Path("crates/running-process/src/actor_runtime.rs"),
+    # #850: `Runtime::spawn` here starts the Tokio task that owns one
+    # NativeProcess child (and a post-exit capture-drain task). The child is
+    # still spawned by NativeProcess::start through the reviewed path; these
+    # tasks only observe, signal and publish the exit of a child already
+    # adopted into PlatformStdChild.
+    Path("crates/running-process/src/child_actor.rs"),
     # Public async process construction delegates only to the blessed typed
     # operation above and does not own a second platform spawn path.
     Path("crates/running-process/src/async_process.rs"),
