@@ -176,10 +176,7 @@ impl ChildActor {
         loop {
             let ticking = self.exited.is_none() && self.observing;
             let received = if ticking {
-                match tokio::time::timeout_at(next_tick, inbox.recv()).await {
-                    Ok(received) => Some(received),
-                    Err(_elapsed) => None,
-                }
+                tokio::time::timeout_at(next_tick, inbox.recv()).await.ok()
             } else {
                 Some(inbox.recv().await)
             };
@@ -284,5 +281,61 @@ impl ChildActor {
         // Linux/macOS perform one final reconciliation and Windows waits for
         // ACTIVE_PROCESS_ZERO. Closing here would race those final
         // descendant notifications.
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::mem::ManuallyDrop;
+
+    use tokio::sync::mpsc;
+    use tokio::sync::mpsc::error::TryRecvError;
+
+    use super::{ChildCommand, ChildHandle};
+
+    /// A handle as a forked copy sees it: same channel, but owned by another
+    /// process image than the current one.
+    fn forked_copy() -> (ChildHandle, mpsc::UnboundedReceiver<ChildCommand>) {
+        let (commands, inbox) = mpsc::unbounded_channel();
+        let handle = ChildHandle {
+            commands: ManuallyDrop::new(commands),
+            pid: 4242,
+            owner: std::process::id().wrapping_add(1),
+        };
+        (handle, inbox)
+    }
+
+    #[test]
+    fn a_forked_copy_fails_fast_instead_of_waiting_for_a_runtime_it_lacks() {
+        let (handle, mut inbox) = forked_copy();
+        assert_eq!(handle.pid(), 4242, "the cached pid needs no actor");
+        let error = handle.try_wait().expect_err("no actor serves this image");
+        assert_eq!(error.kind(), std::io::ErrorKind::BrokenPipe);
+        assert!(handle.kill().is_err());
+        assert!(
+            matches!(inbox.try_recv(), Err(TryRecvError::Empty)),
+            "a request must not even be queued for the foreign actor"
+        );
+    }
+
+    #[test]
+    fn dropping_a_forked_copy_does_not_close_the_actors_channel() {
+        let (handle, mut inbox) = forked_copy();
+        drop(handle);
+        // Closing the channel is what would wake the actor through its
+        // runtime; a forked copy must leave it alone.
+        assert!(matches!(inbox.try_recv(), Err(TryRecvError::Empty)));
+    }
+
+    #[test]
+    fn dropping_the_owning_handle_closes_the_actors_channel() {
+        let (commands, mut inbox) = mpsc::unbounded_channel();
+        let handle = ChildHandle {
+            commands: ManuallyDrop::new(commands),
+            pid: 1,
+            owner: std::process::id(),
+        };
+        drop(handle);
+        assert!(matches!(inbox.try_recv(), Err(TryRecvError::Disconnected)));
     }
 }
