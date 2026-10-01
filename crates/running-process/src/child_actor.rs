@@ -29,6 +29,7 @@
 //! from inside any Tokio runtime.
 
 use std::io;
+use std::mem::ManuallyDrop;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -66,12 +67,24 @@ enum ChildCommand {
 /// A cheap, cloneable handle to a running child actor: the command sender and
 /// the child's pid, which is immutable and so is cached rather than asked for.
 pub(crate) struct ChildHandle {
-    commands: mpsc::UnboundedSender<ChildCommand>,
+    commands: ManuallyDrop<mpsc::UnboundedSender<ChildCommand>>,
     pid: u32,
     /// The process image that owns the actor. A forked copy of this handle
     /// shares the channel but not the runtime that serves it, so a request
     /// would wait for a reply that can never come.
     owner: u32,
+}
+
+impl Drop for ChildHandle {
+    fn drop(&mut self) {
+        // Dropping the last sender wakes the actor through its runtime. In a
+        // forked copy that runtime has no workers and may hold a lock some
+        // other thread owned at fork time, so the copy is leaked instead.
+        if self.owner == std::process::id() {
+            // SAFETY: dropped exactly once, here, and never used afterwards.
+            unsafe { ManuallyDrop::drop(&mut self.commands) };
+        }
+    }
 }
 
 impl ChildHandle {
@@ -124,7 +137,7 @@ pub(crate) fn spawn(
 ) -> ChildHandle {
     let (commands, inbox) = mpsc::unbounded_channel();
     let handle = ChildHandle {
-        commands,
+        commands: ManuallyDrop::new(commands),
         pid: child.id(),
         owner: std::process::id(),
     };

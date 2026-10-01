@@ -361,7 +361,7 @@ struct SharedState {
     capture_overflowed: AtomicBool,
     active_capture_readers: std::sync::atomic::AtomicUsize,
     /// Atomic exit code. `RETURNCODE_NOT_SET` means "not exited yet".
-    /// Updated by a background waiter thread — reading is lock-free.
+    /// Updated by the child actor — reading is lock-free.
     returncode: AtomicI64,
     /// Phase 1 of #221: optional lifecycle-event emitter. `None` means
     /// observation is off (the off-by-default path), so the lifecycle
@@ -369,7 +369,7 @@ struct SharedState {
     /// and `exited` exactly once on the first returncode transition.
     observer: Option<ObserverEmitter>,
     /// Guards against emitting more than one `exited` event when several
-    /// code paths (lifecycle task, `poll`, `kill`) race to record the exit.
+    /// code paths (the child actor serving its tick, `poll`, `kill`) race to record the exit.
     observer_exit_emitted: AtomicBool,
     /// #850: exit publication for waiters that run on the actor runtime.
     /// Mirrors `returncode`; every write goes through [`Self::record_exit`].
@@ -789,7 +789,7 @@ impl NativeProcess {
     ///
     /// Returns `Ok(None)` while the process is still running.
     pub fn poll(&self) -> Result<Option<i32>, ProcessError> {
-        // Fast path: check atomic set by background waiter thread.
+        // Fast path: check atomic set by the child actor.
         if let Some(code) = self.returncode() {
             return Ok(Some(code));
         }
@@ -821,7 +821,7 @@ impl NativeProcess {
             self.finish_capture_drain();
             return Ok(code);
         }
-        // A short timed wait must not depend on the lifecycle task's tick. That
+        // A short timed wait must not depend on the child actor's tick. That
         // task runs on the runtime's timer, whose granularity is coarse on some
         // hosts (about 15 ms on Windows), so a child that has already exited can
         // stay unobserved for longer than a caller's grace period -- which made
@@ -858,7 +858,7 @@ impl NativeProcess {
             }
             timeout = Some(remaining);
         }
-        // #850: the exit is published by the lifecycle task on the actor
+        // #850: the exit is published by the child actor on the actor
         // runtime. `block_on_anywhere` is safe from a Tokio worker too, so a
         // sync caller inside async code keeps working rather than erroring.
         let mut exit = self.shared.exit_code.subscribe();
@@ -1497,14 +1497,14 @@ impl NativeProcess {
 }
 
 /// How long a timed `wait` checks the child directly before falling back to
-/// the runtime's lifecycle task. Long enough to cover the coarsest timer tick a
+/// the child actor's lifecycle tick. Long enough to cover the coarsest timer tick a
 /// host has, short enough that the polling never becomes the steady-state cost.
 const SHORT_WAIT_DIRECT_POLL: Duration = Duration::from_millis(50);
 
 /// Cancel any pending blocking `read()` on the parent-side capture pipes
 /// so the reader threads' `read()` calls return `ERROR_OPERATION_ABORTED`
 /// immediately. Shared by `kill_impl`, `poll`, and the natural-exit
-/// waiter thread (issue #590) — anywhere the child is observed to exit
+/// child actor (issue #590) — anywhere the child is observed to exit
 /// while a grandchild may still hold the pipe open.
 /// Wait until both capture streams report closed or `deadline` elapses.
 /// On deadline, force-set the closed flags (and notify all waiters) so
