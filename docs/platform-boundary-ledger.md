@@ -58,3 +58,28 @@ ordered migration issue, not guessed from a directory wildcard:
 Each migration deletes only the exact rows it removes and updates both ledger
 totals in the same PR. A new row is a failure, including a second identical
 construct in a file that already contains one grandfathered occurrence.
+
+## Zero baseline: what it means (#975)
+
+The ledger is not deleted at zero. "Zero baseline" means **zero unclassified
+rows**: every row that survives consolidation says why it stays, in
+`ci/platform_boundary.classes.tsv` (one line per path / kind / construct; all
+ordinals of that construct share the class). `ci.platform_boundary` fails on
+an unclassified row, on a classification that names no ledger row, and on a
+row that violates its class:
+
+| Class | Meaning | Enforced |
+| --- | --- | --- |
+| `host-test` | a test or fixture asserting real host behaviour | every occurrence must be in test code |
+| `compat-4x` | published 4.x surface | the note must name its 5.0 retirement |
+| `artifact-format` | host selection by artifact format (PDB vs DWARF reader, unwinder per arch) | only in the probe artifact crates |
+
+A new host `cfg` or native import is still a failure (the row would be new);
+the fix is to put the mechanism behind `platform::*`, not to add a class.
+`MAX_LEDGER_ROWS` in `tests/test_platform_boundary.py` is a ceiling that only
+moves down. `--print-totals` reports rows / classified / unclassified.
+
+Not done yet against #975's literal acceptance list: the ledger and the Dylint
+dump escape hatch (`RUNNING_PROCESS_PLATFORM_BOUNDARY_DUMP_DIR`) still exist,
+and the seeded-violation fixtures per forbidden family and the #965 final
+report are open.
