@@ -114,7 +114,6 @@ crates/running-process/src/broker/server/session_serve_async/tests.rs	attr_cfg	u
 crates/running-process/src/broker/server/spawn_coordinator.rs	attr_cfg	unix	0
 crates/running-process/src/broker/server/spawn_coordinator.rs	attr_cfg	windows	0
 crates/running-process/src/broker/session_relay/tests.rs	attr_cfg	unix	0
-crates/running-process/src/cleanup/verify_artifacts.rs	cfg_macro	windows	0
 crates/running-process/src/daemon/backend_endpoint/tests.rs	attr_cfg	unix	0
 crates/running-process/src/daemon/backend_endpoint/tests.rs	attr_cfg	unix	1
 crates/running-process/src/daemon/backend_endpoint/tests.rs	attr_cfg	unix	2
@@ -164,17 +163,9 @@ crates/running-process/src/environment.rs	attr_cfg	windows	0
 crates/running-process/src/lib.rs	attr_cfg	target_os	0
 crates/running-process/src/lib.rs	attr_cfg	unix	0
 crates/running-process/src/lib.rs	attr_cfg	unix	1
-crates/running-process/src/lib.rs	attr_cfg	unix	2
-crates/running-process/src/lib.rs	attr_cfg	unix	3
-crates/running-process/src/lib.rs	attr_cfg	unix	4
 crates/running-process/src/lib.rs	attr_cfg	windows	0
 crates/running-process/src/lib.rs	attr_cfg	windows	1
 crates/running-process/src/lib.rs	attr_cfg	windows	2
-crates/running-process/src/lib.rs	attr_cfg	windows	3
-crates/running-process/src/lib.rs	attr_cfg	windows	4
-crates/running-process/src/lib.rs	attr_cfg	windows	5
-crates/running-process/src/lib.rs	attr_cfg	windows	6
-crates/running-process/src/lib.rs	attr_cfg	windows	7
 crates/running-process/src/probe/client.rs	cfg_macro	windows	0
 crates/running-process/src/probe/mod.rs	cfg_macro	windows	0
 crates/running-process/src/probe/mod.rs	cfg_macro	windows	1
