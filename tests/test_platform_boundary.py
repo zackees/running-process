@@ -9,7 +9,7 @@ from ci import platform_boundary
 # main went red when several merged against a stale count (#975). Growth is also
 # rejected independently -- a new occurrence fails the source scan and Dylint --
 # so the ceiling only has to be lowered when someone wants to lock a gain in.
-MAX_LEDGER_ROWS = 196
+MAX_LEDGER_ROWS = 191
 
 
 def test_bootstrap_ledgers_are_valid() -> None:
@@ -346,10 +346,11 @@ def test_the_real_classifications_are_valid_and_cover_the_argued_rows() -> None:
 
 def test_a_classification_naming_no_ledger_row_is_stale() -> None:
     rows = platform_boundary.parse_ledger()
+    classes, _ = platform_boundary.parse_classes()
     ghost = ("crates/running-process/src/gone.rs", "attr_cfg", "unix")
 
     violations = platform_boundary.classification_violations(
-        rows, {ghost: ("host-test", "why")}, []
+        rows, {**classes, ghost: ("host-test", "why")}, []
     )
 
     assert len(violations) == 1
@@ -388,12 +389,24 @@ def test_bad_classifications_are_rejected(tmp_path) -> None:
     assert "classified twice" in text
 
 
-def test_unclassified_rows_are_counted_not_failed_yet() -> None:
+def test_every_ledger_row_is_classified() -> None:
     rows = platform_boundary.parse_ledger()
     classes, _ = platform_boundary.parse_classes()
 
-    assert platform_boundary.unclassified_rows(rows, classes)
-    assert "unclassified=" in platform_boundary.totals(rows)
+    assert platform_boundary.unclassified_rows(rows, classes) == []
+    assert "unclassified=0" in platform_boundary.totals(rows)
+
+
+def test_an_unclassified_row_is_a_failure() -> None:
+    row = platform_boundary.Row(
+        path="crates/running-process/src/lib.rs",
+        kind="attr_cfg",
+        normalized="unix",
+        ordinal=0,
+    )
+    problems = platform_boundary.classification_violations([row], {}, [])
+
+    assert any("unclassified row" in problem for problem in problems)
 
 
 def test_the_shadow_tests_are_classified_because_they_sit_in_a_test_module() -> None:

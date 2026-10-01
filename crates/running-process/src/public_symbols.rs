@@ -235,7 +235,6 @@ mod tests {
     }
 }
 
-#[cfg(windows)]
 #[unsafe(no_mangle)]
 #[inline(never)]
 pub extern "C" fn rp_assign_child_to_windows_kill_on_close_job_public(
@@ -245,7 +244,6 @@ pub extern "C" fn rp_assign_child_to_windows_kill_on_close_job_public(
     assign_child_to_windows_kill_on_close_job_impl(child, address_space_limit_bytes)
 }
 
-#[cfg(windows)]
 #[inline(never)]
 /// #539 slice 2 — observer-aware Job Object setup. When
 /// `descendant_sink` is `Some`, the returned handle also owns an IOCP and
