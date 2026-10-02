@@ -636,7 +636,7 @@ impl SpawnSpec {
                     Some(launch) => {
                         command =
                             self.command(launch.loader.as_os_str(), &launch.args(&self.args))?;
-                        command.spawn()
+                        platform::ape::retry_while_busy(|| command.spawn())
                     }
                     None => Err(error),
                 }

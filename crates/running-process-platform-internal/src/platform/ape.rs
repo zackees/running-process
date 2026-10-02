@@ -424,6 +424,24 @@ fn materialize_into(_image: &Path, _dir: &Path) -> Option<PathBuf> {
     None
 }
 
+/// Run `spawn` again while the host reports the program busy.
+///
+/// A loader this crate has just written can still be open for writing in a
+/// child that another thread forked before the write finished; until that
+/// child execs, the host refuses to execute the file (`ETXTBSY`). The window
+/// is a fork-to-exec interval, so a short backoff closes it.
+pub fn retry_while_busy<T>(mut spawn: impl FnMut() -> io::Result<T>) -> io::Result<T> {
+    for delay_ms in [1, 4, 16, 64, 256] {
+        match spawn() {
+            Err(error) if error.kind() == io::ErrorKind::ExecutableFileBusy => {
+                std::thread::sleep(std::time::Duration::from_millis(delay_ms));
+            }
+            result => return result,
+        }
+    }
+    spawn()
+}
+
 /// Prepare a caller-built command to be spawned again as an APE image.
 ///
 /// Returns `true` when `error` is the kernel refusing an APE image and the

@@ -21,6 +21,6 @@
 
 pub use running_process_platform_internal::platform::ape::{
     is_ape_file, is_ape_header, is_exec_format_error, materialize_embedded_loader, plan_launch,
-    prepare_std_retry, resolve_program, spawn_std, ApeLaunch, ChildEnvironment, LoaderKind, MAGICS,
-    NEEDS_LOADER,
+    prepare_std_retry, resolve_program, retry_while_busy, spawn_std, ApeLaunch, ChildEnvironment,
+    LoaderKind, MAGICS, NEEDS_LOADER,
 };
