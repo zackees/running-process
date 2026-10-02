@@ -209,6 +209,26 @@ fn prologue_parse_selects_the_linux_branch_per_cpu() {
 }
 
 #[test]
+fn the_fixture_prologue_yields_every_branch() {
+    let mut prologue = Vec::new();
+    File::open(hello_fixture())
+        .unwrap()
+        .take(64 * 1024)
+        .read_to_end(&mut prologue)
+        .unwrap();
+    let parsed = Prologue::parse(&prologue);
+    assert_eq!(parsed.linux_loader_x86_64, Some((275_392, 4180)));
+    assert_eq!(parsed.linux_loader_aarch64, Some((279_572, 4928)));
+    // The macOS x86_64 branch shares the Linux blob, then patches it.
+    assert_eq!(parsed.macos_loader_x86_64, Some((275_392, 4180)));
+    assert_eq!(parsed.macos_loader_source_aarch64, Some((284_500, 10_590)));
+    assert_eq!(
+        Prologue::parse(b"MZqFpD='\n\0\xff\xfe random\n"),
+        Prologue::default()
+    );
+}
+
+#[test]
 fn the_fork_lock_admits_spawns_together_and_writers_alone() {
     let first = fork_guard();
     let second = fork_guard();
@@ -269,6 +289,43 @@ mod embedded {
         assert!(x86.starts_with(b"\x7fELF") && arm.starts_with(b"\x7fELF"));
         assert_ne!(x86, arm);
         assert_eq!(extract_loader(&hello_fixture(), "riscv64"), None);
+    }
+
+    #[test]
+    fn the_macos_loaders_are_extracted_on_any_host() {
+        let macho = extract_macos_x86_64_loader(&hello_fixture()).expect("x86_64 Mach-O loader");
+        assert!(macho.starts_with(&[0xcf, 0xfa, 0xed, 0xfe]), "MH_MAGIC_64");
+        assert_eq!(macho[4..8], [7, 0, 0, 1], "CPU_TYPE_X86_64");
+        let source =
+            extract_macos_aarch64_loader_source(&hello_fixture()).expect("ape-m1.c source");
+        let source = String::from_utf8(source).expect("C source is text");
+        assert!(
+            source.contains("main"),
+            "the loader source has an entry point"
+        );
+    }
+
+    #[test]
+    fn install_reuses_identical_files_and_refuses_shared_directories() {
+        if LOADER_HOST == LoaderHost::None {
+            return; // nothing is ever installed on a host that runs APE natively
+        }
+        let root = tempfile::tempdir().unwrap();
+        let cache = root.path().join("cache");
+        let first = install(std::slice::from_ref(&cache), Some("bin-x"), "ape", b"bytes")
+            .expect("installed");
+        assert_eq!(first, cache.join("bin-x").join("ape"));
+        assert_eq!(
+            install(std::slice::from_ref(&cache), Some("bin-x"), "ape", b"bytes"),
+            Some(first.clone())
+        );
+        // A file where the parent should be is never a usable directory.
+        let file_parent = root.path().join("file");
+        std::fs::write(&file_parent, b"").unwrap();
+        assert_eq!(
+            install(&[file_parent.join("cache")], None, "ape", b"bytes"),
+            None
+        );
     }
 
     /// Hostile/corrupt images never panic and never yield a loader.

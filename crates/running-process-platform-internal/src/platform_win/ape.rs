@@ -16,7 +16,7 @@ pub const APE_SHELL: &str = "";
 pub const APE_SYSTEM_LOADERS: &[&str] = &[];
 
 /// No loader is needed to start an APE image on Windows.
-pub const APE_EMBEDDED_LOADER: bool = false;
+pub const APE_LOADER_HOST: crate::platform::ape::LoaderHost = crate::platform::ape::LoaderHost::None;
 
 /// `CreateProcess` has no shell fallback, and an APE image needs none.
 pub const APE_EXECVP_SHELL_FALLBACK: bool = false;
@@ -36,8 +36,13 @@ pub fn default_loader_dirs() -> Vec<PathBuf> {
     Vec::new()
 }
 
-/// No extracted loader is needed on Windows.
-pub fn materialize_loader(_bytes: &[u8], _name: &str, _dirs: &[PathBuf]) -> Option<PathBuf> {
+/// No loader is ever installed on Windows.
+pub fn private_exec_dir(_dir: &Path) -> bool {
+    false
+}
+
+/// No loader is ever installed on Windows.
+pub fn anonymous_executable(_bytes: &[u8], _name: &str) -> Option<PathBuf> {
     None
 }
 

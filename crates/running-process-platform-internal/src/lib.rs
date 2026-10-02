@@ -137,9 +137,9 @@ pub use platform_imp::{process_loaded_images, process_open_loaded_image_file};
 #[cfg(feature = "async-process")]
 pub use platform_imp::ape_route_tokio_through_execvp;
 pub use platform_imp::{
-    ape_default_loader_dirs, ape_is_exec_format_error, ape_is_executable, ape_mark_executable,
-    ape_materialize_loader, ape_route_through_execvp, APE_EMBEDDED_LOADER,
-    APE_EXECVP_SHELL_FALLBACK, APE_NEEDS_LOADER, APE_SHELL, APE_SYSTEM_LOADERS,
+    ape_anonymous_executable, ape_default_loader_dirs, ape_is_exec_format_error, ape_is_executable,
+    ape_mark_executable, ape_private_exec_dir, ape_route_through_execvp, APE_EXECVP_SHELL_FALLBACK,
+    APE_LOADER_HOST, APE_NEEDS_LOADER, APE_SHELL, APE_SYSTEM_LOADERS,
 };
 
 pub use platform_imp::{
@@ -633,7 +633,14 @@ impl SpawnSpec {
             self.current_dir.as_deref(),
             &options,
         ) {
-            Some(launch) => self.command(launch.loader.as_os_str(), &launch.args(&self.args))?,
+            Some(launch) => {
+                let mut command =
+                    self.command(launch.loader.as_os_str(), &launch.args(&self.args))?;
+                if let Some(path) = launch.child_path(options.path.as_deref()) {
+                    command.env("PATH", path);
+                }
+                command
+            }
             None => self.command(&self.program, &self.args)?,
         };
         // A loader planning just installed can still be held open by a child

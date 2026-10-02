@@ -1322,6 +1322,9 @@ impl NativeProcess {
         let mut command = match command_override {
             Some(command) => command,
             None => {
+                // The child's PATH to set last, when an APE launch puts its
+                // loader's directory first on it.
+                let mut ape_path = None;
                 let mut command = match &self.config.command {
                     CommandSpec::Shell(command) => shell_command(command),
                     CommandSpec::Argv(argv) => {
@@ -1339,6 +1342,7 @@ impl NativeProcess {
                             &options,
                         ) {
                             Some(launch) => {
+                                ape_path = launch.child_path(options.path.as_deref());
                                 let mut command = Command::new(&launch.loader);
                                 command.args(launch.args(&argv[1..]));
                                 command
@@ -1357,6 +1361,9 @@ impl NativeProcess {
                 if let Some(env) = &self.config.env {
                     command.env_clear();
                     command.envs(env.iter().map(|(k, v)| (k, v)));
+                }
+                if let Some(path) = ape_path {
+                    command.env("PATH", path);
                 }
                 command
             }

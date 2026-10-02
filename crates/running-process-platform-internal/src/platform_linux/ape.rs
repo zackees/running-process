@@ -1,22 +1,18 @@
-//! linux Actually Portable Executable launch mechanics.
-//!
-//! A loader extracted from an APE image is installed content-addressed into
-//! the first candidate directory that is owned by the effective user, not
-//! group/world-writable, and on a mount without `noexec`. When none
-//! qualifies (read-only home, `noexec` `/tmp`, no runtime dir) the loader is
-//! placed in a sealed `memfd` held open for the life of the process and
-//! exec'd via `/proc/self/fd/N`.
+//! linux Actually Portable Executable launch mechanics: the default loader
+//! cache directories, the private-directory check installs rely on, and the
+//! sealed `memfd` fallback used when no cache directory is usable (read-only
+//! home, `noexec` `/tmp`, no runtime dir). The memfd is held open for the life
+//! of the process and exec'd via `/proc/self/fd/N`.
 
 use std::collections::HashMap;
 use std::ffi::CString;
-use std::fs::{File, OpenOptions};
+use std::fs::File;
 use std::io::{self, Write};
 use std::os::fd::{AsRawFd, FromRawFd};
 use std::os::unix::ffi::OsStrExt;
-use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt};
+use std::os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt};
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 
 /// An APE image is not a native Linux executable.
@@ -28,8 +24,8 @@ pub const APE_SHELL: &str = "/bin/sh";
 /// Where Cosmopolitan's install instructions place a system-wide loader.
 pub const APE_SYSTEM_LOADERS: &[&str] = &["/usr/bin/ape", "/usr/local/bin/ape"];
 
-/// The prologue's Linux branch carries a loader that runs as extracted.
-pub const APE_EMBEDDED_LOADER: bool = true;
+/// Which embedded loader this host runs: the Linux static ELF.
+pub const APE_LOADER_HOST: crate::platform::ape::LoaderHost = crate::platform::ape::LoaderHost::Linux;
 
 /// Whether this libc's `execvp` runs an `ENOEXEC` image with the shell, as
 /// POSIX requires. glibc does; musl does not.
@@ -95,73 +91,21 @@ pub fn default_loader_dirs() -> Vec<PathBuf> {
     dirs
 }
 
-/// Install `bytes` as an executable named `name` and return its exec path.
-pub fn materialize_loader(bytes: &[u8], name: &str, dirs: &[PathBuf]) -> Option<PathBuf> {
-    dirs.iter()
-        .find_map(|dir| install_in(dir, bytes, name))
-        .or_else(|| memfd_loader(bytes, name))
-}
-
-fn install_in(dir: &Path, bytes: &[u8], name: &str) -> Option<PathBuf> {
-    if !private_dir(dir) || !mount_allows_exec(dir) {
-        return None;
-    }
-    let target = dir.join(name);
-    if is_installed(&target, bytes) {
-        return Some(target);
-    }
-    static SEQ: AtomicU64 = AtomicU64::new(0);
-    let staging = dir.join(format!(
-        ".{name}.{}.{}",
-        std::process::id(),
-        SEQ.fetch_add(1, Ordering::Relaxed)
-    ));
-    // No child may inherit the writable descriptor, or executing the loader
-    // would hit ETXTBSY until that child execs.
-    let written = {
-        let _fork = crate::platform::ape::exclusive_fork_guard();
-        OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(0o700)
-            .open(&staging)
-            .and_then(|mut file| {
-                file.write_all(bytes)?;
-                file.sync_all()
-            })
-    }
-    // rename(2) is atomic: concurrent installers race benignly to identical
-    // content, and readers never see a partial file.
-    .and_then(|()| std::fs::rename(&staging, &target));
-    if written.is_err() {
-        let _ = std::fs::remove_file(&staging);
-        return None;
-    }
-    is_installed(&target, bytes).then_some(target)
-}
-
-/// A regular, owner-executable file whose content is exactly `bytes`.
-fn is_installed(path: &Path, bytes: &[u8]) -> bool {
-    std::fs::symlink_metadata(path).is_ok_and(|meta| {
-        meta.file_type().is_file()
-            && meta.permissions().mode() & 0o100 != 0
-            && meta.len() == bytes.len() as u64
-    }) && std::fs::read(path).is_ok_and(|content| content == bytes)
-}
-
-/// Create `dir` (mode 0700) if needed and accept it only when it is a real
-/// directory owned by the effective user with no group/other write access,
-/// so no other account can plant or swap a loader in it.
-fn private_dir(dir: &Path) -> bool {
+/// Whether `dir` may hold an executable this crate installs: create it (mode
+/// 0700) if needed, then accept it only when it is a real directory owned by
+/// the effective user with no group/other write access -- so no other account
+/// can plant or swap a file in it -- on a mount that allows exec.
+pub fn private_exec_dir(dir: &Path) -> bool {
     let _ = std::fs::DirBuilder::new()
         .recursive(true)
         .mode(0o700)
         .create(dir);
     // SAFETY: geteuid has no preconditions and cannot fail.
     let uid = unsafe { libc::geteuid() };
-    std::fs::symlink_metadata(dir).is_ok_and(|meta| {
+    let private = std::fs::symlink_metadata(dir).is_ok_and(|meta| {
         meta.file_type().is_dir() && meta.uid() == uid && meta.mode() & 0o022 == 0
-    })
+    });
+    private && mount_allows_exec(dir)
 }
 
 fn mount_allows_exec(dir: &Path) -> bool {
@@ -176,6 +120,12 @@ fn mount_allows_exec(dir: &Path) -> bool {
     // SAFETY: a successful statvfs initialized the complete output structure.
     let stats = unsafe { stats.assume_init() };
     stats.f_flag & libc::ST_NOEXEC == 0
+}
+
+/// Last-resort executable with no filesystem home: a sealed memfd exec'd via
+/// `/proc/self/fd/N`. Valid only for direct children of this process.
+pub fn anonymous_executable(bytes: &[u8], name: &str) -> Option<PathBuf> {
+    memfd_loader(bytes, name)
 }
 
 /// Sealed memfds kept open for the process lifetime, keyed by loader name.
@@ -208,9 +158,12 @@ fn create_sealed_memfd(bytes: &[u8], name: &str) -> Option<File> {
     // MFD_EXEC (Linux 6.3+) keeps the memfd executable under
     // `vm.memfd_noexec=1`; older kernels reject the flag with EINVAL.
     let fd = [base | libc::MFD_EXEC, base].into_iter().find_map(|flags| {
+        // Raw syscall, not the libc wrapper: a binary linked against an old
+        // glibc (2.17 for manylinux2014 wheels) predates `memfd_create()`,
+        // which glibc added in 2.27.
         // SAFETY: `cname` is NUL-terminated; the flags are valid memfd flags.
-        let fd = unsafe { libc::memfd_create(cname.as_ptr(), flags) };
-        (fd >= 0).then_some(fd)
+        let fd = unsafe { libc::syscall(libc::SYS_memfd_create, cname.as_ptr(), flags) };
+        i32::try_from(fd).ok().filter(|fd| *fd >= 0)
     })?;
     // SAFETY: `fd` is a freshly created descriptor owned by nobody else.
     let mut file = unsafe { File::from_raw_fd(fd) };
