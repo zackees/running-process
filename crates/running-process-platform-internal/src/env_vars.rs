@@ -41,13 +41,19 @@ crate::declare_env_vars! {
         "X11 display; its presence is what makes a Linux window icon possible.";
     HOME => "HOME",
         EnvKind::Path, Owner::Foreign, "autostart paths cannot be resolved",
-        "Home directory; roots the autostart entries and the fallback APE loader cache.";
+        "Home directory; roots the autostart entries and the fallback APE loader cache directory.";
     LOCALAPPDATA => "LOCALAPPDATA",
         EnvKind::Path, Owner::Foreign, "the platform default is derived",
         "Windows per-user application data root.";
     PATH => "PATH",
         EnvKind::Text, Owner::Foreign, "the child inherits no explicit PATH",
-        "Executable search path, forwarded to the symbolization worker and searched for an APE loader.";
+        "Executable search path, forwarded to the symbolization worker and searched for an APE image or loader.";
+    APE_CACHE_DIR => "RUNNING_PROCESS_APE_CACHE_DIR",
+        EnvKind::Path, Owner::Crate, "the XDG cache, runtime and temporary directories",
+        "Preferred directory for loaders extracted from APE images; used only when private and exec-capable.";
+    APE_LOADER => "RUNNING_PROCESS_APE_LOADER",
+        EnvKind::Path, Owner::Crate, "the image's embedded loader, then `ape`, then `/bin/sh`",
+        "Explicit loader (an `ape` binary or a POSIX shell) for APE images.";
     CONPTY_CACHE => "RUNNING_PROCESS_CONPTY_CACHE",
         EnvKind::Path, Owner::Crate, "the platform cache directory",
         "Root under which the ConPTY sidecar is cached on Windows.";
@@ -71,7 +77,7 @@ crate::declare_env_vars! {
         "Use the system ConPTY instead of the bundled sidecar on Windows.";
     TMPDIR => "TMPDIR",
         EnvKind::Path, Owner::Foreign, "the platform temporary directory",
-        "Temporary directory: a macOS broker endpoint root and the APE loader cache.";
+        "macOS per-session temporary directory; a broker endpoint root.";
     WAYLAND_DISPLAY => "WAYLAND_DISPLAY",
         EnvKind::Text, Owner::Foreign, "not a Wayland session",
         "Wayland session marker; window icons are unsupported under Wayland.";
@@ -81,6 +87,9 @@ crate::declare_env_vars! {
     WT_SESSION => "WT_SESSION",
         EnvKind::Text, Owner::Foreign, "not inside Windows Terminal",
         "Windows Terminal session marker; runtime window icons are degraded there.";
+    XDG_CACHE_HOME => "XDG_CACHE_HOME",
+        EnvKind::Path, Owner::Foreign, "`~/.cache` is used",
+        "XDG per-user cache root; where extracted APE loaders are installed.";
     XDG_CONFIG_HOME => "XDG_CONFIG_HOME",
         EnvKind::Path, Owner::Foreign, "`~/.config` is used",
         "XDG per-user configuration root; where service definitions are read.";
@@ -89,7 +98,7 @@ crate::declare_env_vars! {
         "XDG per-user data root, used by the daemon runtime collector.";
     XDG_RUNTIME_DIR => "XDG_RUNTIME_DIR",
         EnvKind::Path, Owner::Foreign, "a per-user directory under /tmp",
-        "XDG per-user runtime root; where broker sockets are placed.";
+        "XDG per-user runtime root; where broker sockets and fallback APE loaders are placed.";
     XDG_STATE_HOME => "XDG_STATE_HOME",
         EnvKind::Path, Owner::Foreign, "~/.local/state",
         "XDG state root.";

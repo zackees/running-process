@@ -4,7 +4,7 @@
 //! it and none of the recovery runs.
 
 use std::io;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// An APE image is a native PE executable on Windows.
 pub const APE_NEEDS_LOADER: bool = false;
@@ -24,6 +24,21 @@ pub const APE_EXECVP_SHELL_FALLBACK: bool = false;
 /// Windows runs APE images natively, so no spawn error is a refused one.
 pub fn is_exec_format_error(_error: &io::Error) -> bool {
     false
+}
+
+/// Windows decides executability by extension, not by a permission bit.
+pub fn is_executable(_metadata: &std::fs::Metadata) -> bool {
+    true
+}
+
+/// No extracted loader is needed on Windows.
+pub fn default_loader_dirs() -> Vec<PathBuf> {
+    Vec::new()
+}
+
+/// No extracted loader is needed on Windows.
+pub fn materialize_loader(_bytes: &[u8], _name: &str, _dirs: &[PathBuf]) -> Option<PathBuf> {
+    None
 }
 
 /// Windows decides executability by extension, not by a permission bit.

@@ -127,7 +127,9 @@ pub use fs::{
 #[path = "platform_linux/ape.rs"]
 pub(crate) mod ape;
 pub use ape::{
-    is_exec_format_error as ape_is_exec_format_error, mark_executable as ape_mark_executable,
+    default_loader_dirs as ape_default_loader_dirs, is_exec_format_error as ape_is_exec_format_error,
+    is_executable as ape_is_executable, mark_executable as ape_mark_executable,
+    materialize_loader as ape_materialize_loader,
     route_through_execvp as ape_route_through_execvp, APE_EMBEDDED_LOADER,
     APE_EXECVP_SHELL_FALLBACK, APE_NEEDS_LOADER, APE_SHELL, APE_SYSTEM_LOADERS,
 };

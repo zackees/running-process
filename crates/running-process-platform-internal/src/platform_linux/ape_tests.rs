@@ -1,68 +1,97 @@
-use std::io::Write;
+use std::ffi::OsString;
+use std::io::{Read, Write};
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
+use super::*;
 use crate::platform::ape;
 
-/// A shell-prologue image like Cosmopolitan's: the kernel refuses it, a
-/// shell runs it. With `loader`, the prologue also embeds that file as
-/// its Linux loader, in the same `dd ... | gzip -dc` form.
-fn image(dir: &Path, loader: Option<&[u8]>) -> PathBuf {
-    #[cfg(feature = "ape-loader")]
-    let member = loader.map(gzip).unwrap_or_default();
-    #[cfg(not(feature = "ape-loader"))]
-    let member: Vec<u8> = loader.map(<[u8]>::to_vec).unwrap_or_default();
-    let script = |offset: usize| {
-        format!(
-            "MZqFpD='\n'\nt=\"${{TMPDIR:-${{HOME:-.}}}}/.ape-test\"\n\
-             if [ ! -d /Applications ]; then\nif [ \"$m\" = {machine} ]; then\n\
-             dd if=\"$o\" skip={offset:<10} count={len:<10} bs=1 2>/dev/null | gzip -dc\n\
-             fi\nfi\nprintf 'ape-ok:%s|' \"$@\"\nexit 0\n",
-            machine = std::env::consts::ARCH,
-            len = member.len(),
-        )
-    };
-    let offset = script(0).len();
+/// The checked-in cosmocc hello-world: prints `hello world` and its args.
+fn hello() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data/ape-hello/hello.com")
+}
+
+/// A shell-prologue image like Cosmopolitan's, with no embedded loader: the
+/// kernel refuses it and a shell runs it.
+fn shell_image(dir: &Path) -> PathBuf {
     let path = dir.join("tool.com");
-    let mut file = std::fs::File::create(&path).expect("create image");
-    file.write_all(script(offset).as_bytes()).expect("write prologue");
-    file.write_all(&member).expect("write loader");
+    let mut file = File::create(&path).expect("create image");
+    file.write_all(b"MZqFpD='\n'\nprintf 'ape-ok:%s|' \"$@\"\nexit 0\n")
+        .expect("write prologue");
     drop(file);
     super::mark_executable(&path).expect("mark image executable");
     path
 }
 
-#[cfg(feature = "ape-loader")]
-fn gzip(payload: &[u8]) -> Vec<u8> {
-    let mut member = vec![0x1f, 0x8b, 8, 0, 0, 0, 0, 0, 0, 3];
-    member.extend_from_slice(&miniz_oxide::deflate::compress_to_vec(payload, 1));
-    member.extend_from_slice(&0u32.to_le_bytes());
-    member.extend_from_slice(&(payload.len() as u32).to_le_bytes());
-    member
+fn copy_hello(dir: &Path, name: &str) -> PathBuf {
+    let path = dir.join(name);
+    std::fs::copy(hello(), &path).unwrap();
+    path
 }
 
-/// Spawn `spec`, retrying while a sibling test's fork still holds a freshly
-/// written fixture open for writing (`ETXTBSY`).
-#[cfg(feature = "async-process")]
-async fn spawn_when_idle(spec: crate::SpawnSpec) -> std::io::Result<crate::PlatformChild> {
-    for _ in 0..50 {
-        match spec.clone().spawn().await {
-            Err(error) if error.kind() == std::io::ErrorKind::ExecutableFileBusy => {
-                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-            }
-            result => return result,
-        }
-    }
-    spec.spawn().await
+fn host_loader() -> Vec<u8> {
+    ape::extract_loader(&hello(), std::env::consts::ARCH).expect("fixture embeds host loader")
 }
 
 fn scratch() -> tempfile::TempDir {
     tempfile::tempdir().expect("scratch directory")
 }
 
+/// Spawn `spec` with its output captured, retrying while a sibling test's
+/// fork still holds a freshly written file open (`ETXTBSY`).
+#[cfg(feature = "async-process")]
+fn output(spec: crate::SpawnSpec) -> std::process::Output {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("runtime");
+    runtime.block_on(async {
+        let spec = spec
+            .stdout(crate::StreamMode::Piped)
+            .stderr(crate::StreamMode::Piped);
+        for _ in 0..50 {
+            match spec.clone().spawn().await {
+                Err(error) if error.kind() == io::ErrorKind::ExecutableFileBusy => {
+                    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                }
+                result => {
+                    return result
+                        .expect("spawn")
+                        .wait_with_output()
+                        .await
+                        .expect("reap")
+                }
+            }
+        }
+        panic!("program stayed busy");
+    })
+}
+
+/// A child environment with no `PATH`, `TMPDIR` or `HOME`, so neither `ape`,
+/// shell utilities, nor the prologue's own cache can help: only the loader
+/// this crate extracts can run the image.
+#[cfg(feature = "async-process")]
+fn hostile(program: impl Into<OsString>, cache: &Path, args: &[&str]) -> std::process::Output {
+    let mut spec = crate::SpawnSpec::new(program)
+        .clear_env(true)
+        .env("PATH", "/nonexistent")
+        .env("TMPDIR", "/nonexistent")
+        .env("HOME", "/nonexistent")
+        .env(ape::CACHE_DIR_ENV, cache);
+    for arg in args {
+        spec = spec.arg(*arg);
+    }
+    output(spec)
+}
+
+fn stdout(output: &std::process::Output) -> String {
+    String::from_utf8_lossy(&output.stdout).into_owned()
+}
+
 #[test]
 fn the_kernel_refuses_an_ape_image_without_help() {
     let dir = scratch();
-    let image = image(dir.path(), None);
+    let image = shell_image(dir.path());
     let error = ape::retry_while_busy(|| std::process::Command::new(&image).output())
         .expect_err("no binfmt registration for the fixture");
     assert!(super::is_exec_format_error(&error), "{error:?}");
@@ -74,7 +103,7 @@ fn a_caller_built_command_is_retried_with_its_settings_intact() {
         return;
     }
     let dir = scratch();
-    let image = image(dir.path(), None);
+    let image = shell_image(dir.path());
     let mut command = std::process::Command::new("./tool.com");
     command
         .args(["one", "two words"])
@@ -101,57 +130,261 @@ fn a_refused_native_image_keeps_its_error() {
     assert!(super::is_exec_format_error(&error), "{error:?}");
 }
 
-#[cfg(feature = "async-process")]
-#[tokio::test]
-async fn a_spec_with_a_cleared_environment_runs_through_the_shell() {
-    let dir = scratch();
-    let image = image(dir.path(), None);
-    let output = spawn_when_idle(crate::SpawnSpec::new(&image)
-        .arg("x")
-        .clear_env(true)
-        .stdout(crate::StreamMode::Piped))
-        .await
-        .expect("APE image launched")
+#[test]
+fn command_routes_a_real_image_through_its_loader() {
+    let mut command = ape::command(hello());
+    command.arg("std").stdout(std::process::Stdio::piped());
+    let output = ape::retry_while_busy(|| ape::spawn_std(&mut command, |command| command.spawn()))
+        .expect("real APE must spawn")
         .wait_with_output()
-        .await
         .expect("reap");
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(output.stdout, b"hello world std\n");
+}
+
+#[cfg(feature = "async-process")]
+#[test]
+fn a_spec_with_a_cleared_environment_runs_a_shell_image() {
+    let dir = scratch();
+    let output = output(crate::SpawnSpec::new(shell_image(dir.path())).arg("x").clear_env(true));
     assert!(output.status.success(), "{output:?}");
     assert_eq!(output.stdout, b"ape-ok:x|");
 }
 
-/// The embedded loader runs the image as `loader image args...`. The
-/// host shell is a real ELF that does exactly that with a script, so
-/// embedding it proves extraction, caching and exec end to end.
-#[cfg(all(feature = "ape-loader", feature = "async-process"))]
-#[tokio::test]
-async fn a_spec_runs_the_embedded_loader_directly() {
-    let shell = std::fs::read(std::fs::canonicalize(super::APE_SHELL).unwrap()).unwrap();
-    let dir = scratch();
-    let image = image(dir.path(), Some(&shell));
-    let cache = dir.path().join("cache");
-    let environment = ape::ChildEnvironment {
-        tmpdir: Some(cache.clone().into_os_string()),
-        ..ape::ChildEnvironment::default()
-    };
-    let launch = ape::plan_launch(image.as_os_str(), None, &environment).expect("planned");
-    if launch.kind == ape::LoaderKind::System {
-        return; // an installed `ape` wins, as it does in the prologue
-    }
-    assert_eq!(launch.kind, ape::LoaderKind::Embedded);
-    assert_eq!(launch.loader, cache.join(".ape-test"));
-
-    let output = spawn_when_idle(crate::SpawnSpec::new(&image)
-        .arg("a")
-        .arg("b")
-        .clear_env(true)
-        .env("TMPDIR", &cache)
-        .stdout(crate::StreamMode::Piped))
-        .await
-        .expect("APE image launched")
-        .wait_with_output()
-        .await
-        .expect("reap");
+#[cfg(feature = "async-process")]
+#[test]
+fn a_real_image_runs_through_the_default_loader_chain() {
+    let output = output(crate::SpawnSpec::new(hello()).arg("from").arg("spec"));
     assert!(output.status.success(), "{output:?}");
-    assert_eq!(output.stdout, b"ape-ok:a|ape-ok:b|");
-    assert_eq!(std::fs::read(cache.join(".ape-test")).unwrap(), shell);
+    assert_eq!(stdout(&output), "hello world from spec\n");
+}
+
+#[cfg(all(feature = "async-process", feature = "ape-loader"))]
+#[test]
+fn a_real_image_runs_with_a_hostile_child_environment_using_its_own_loader() {
+    let cache = scratch();
+    let output = hostile(hello(), cache.path(), &["hostile"]);
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(stdout(&output), "hello world hostile\n");
+    let installed: Vec<_> = std::fs::read_dir(cache.path())
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+        .collect();
+    assert_eq!(installed.len(), 1, "{installed:?}");
+    assert!(installed[0].starts_with("ape-loader-"), "{installed:?}");
+}
+
+#[cfg(all(feature = "async-process", feature = "ape-loader"))]
+#[test]
+fn a_broken_ape_on_path_does_not_hijack_the_launch() {
+    let bin = scratch();
+    let fake = bin.path().join("ape");
+    std::fs::write(&fake, "#!/bin/sh\necho hijacked; exit 99\n").unwrap();
+    super::mark_executable(&fake).unwrap();
+    let image = copy_hello(bin.path(), "hello");
+    let cache = scratch();
+    let output = output(
+        crate::SpawnSpec::new("hello")
+            .arg("ok")
+            .env("PATH", bin.path())
+            .env(ape::CACHE_DIR_ENV, cache.path()),
+    );
+    assert_eq!(stdout(&output), "hello world ok\n", "{output:?}");
+    assert!(image.exists());
+}
+
+#[cfg(all(feature = "async-process", feature = "ape-loader"))]
+#[test]
+fn awkward_image_paths_and_arguments_survive() {
+    let dir = scratch();
+    let sub = dir.path().join("dir with spaces – ünïcode");
+    std::fs::create_dir(&sub).unwrap();
+    let image = copy_hello(&sub, "hello world.com");
+    let link = dir.path().join("link-to-hello");
+    std::os::unix::fs::symlink(&image, &link).unwrap();
+    let cache = scratch();
+    for program in [&image, &link] {
+        let output = hostile(
+            program,
+            cache.path(),
+            &["a b", "", "$HOME", "--assimilate"],
+        );
+        assert!(output.status.success(), "{output:?}");
+        assert_eq!(stdout(&output), "hello world a b  $HOME --assimilate\n");
+    }
+    // `--assimilate` is just an argument: the image must be untouched.
+    assert_eq!(
+        std::fs::read(&image).unwrap(),
+        std::fs::read(hello()).unwrap()
+    );
+}
+
+#[cfg(all(feature = "async-process", feature = "ape-loader"))]
+#[test]
+fn a_rebuilt_image_at_the_same_path_is_reconsidered() {
+    let dir = scratch();
+    let image = copy_hello(dir.path(), "tool");
+    let cache = scratch();
+    assert_eq!(
+        stdout(&hostile(&image, cache.path(), &["1"])),
+        "hello world 1\n"
+    );
+    // Replace with a native script: it must now run as itself.
+    std::fs::write(&image, "#!/bin/sh\necho native \"$@\"\n").unwrap();
+    super::mark_executable(&image).unwrap();
+    assert_eq!(
+        stdout(&output(crate::SpawnSpec::new(&image).arg("2"))),
+        "native 2\n"
+    );
+    // A cache emptied between spawns is re-materialized.
+    std::fs::copy(hello(), &image).unwrap();
+    for entry in std::fs::read_dir(cache.path()).unwrap() {
+        std::fs::remove_file(entry.unwrap().path()).unwrap();
+    }
+    assert_eq!(
+        stdout(&hostile(&image, cache.path(), &["3"])),
+        "hello world 3\n"
+    );
+}
+
+#[cfg(all(feature = "async-process", feature = "ape-loader"))]
+#[test]
+fn many_concurrent_first_spawns_share_one_installed_loader() {
+    let cache = scratch();
+    let cache_dir = cache.path().join("cold");
+    std::thread::scope(|scope| {
+        let handles: Vec<_> = (0..48)
+            .map(|index| {
+                let cache_dir = &cache_dir;
+                scope.spawn(move || {
+                    let arg = index.to_string();
+                    let output = hostile(hello(), cache_dir, &[&arg]);
+                    assert!(output.status.success(), "spawn {index}: {output:?}");
+                    assert_eq!(stdout(&output), format!("hello world {index}\n"));
+                })
+            })
+            .collect();
+        for handle in handles {
+            handle.join().unwrap();
+        }
+    });
+}
+
+#[cfg(feature = "ape-loader")]
+fn run_loader(loader: &Path, args: &[&str]) -> std::process::Output {
+    let mut command = std::process::Command::new(loader);
+    command.arg(hello()).args(args).env_clear();
+    ape::retry_while_busy(|| {
+        let _fork = ape::fork_guard();
+        command.output()
+    })
+    .expect("loader must spawn")
+}
+
+#[cfg(feature = "ape-loader")]
+#[test]
+fn a_memfd_loader_runs_a_real_image_and_is_sealed() {
+    let loader = memfd_loader(&host_loader(), "ape-loader-test-memfd").expect("memfd");
+    assert!(loader.starts_with("/proc/self/fd"));
+    let output = run_loader(&loader, &["memfd"]);
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(stdout(&output), "hello world memfd\n");
+    // Sealed: the running loader cannot be rewritten underneath children.
+    assert!(OpenOptions::new()
+        .write(true)
+        .open(&loader)
+        .and_then(|mut file| file.write_all(b"x"))
+        .is_err());
+}
+
+#[cfg(feature = "ape-loader")]
+#[test]
+fn unusable_directories_fall_back_to_a_memfd() {
+    let root = scratch();
+    let readonly = root.path().join("ro");
+    std::fs::create_dir(&readonly).unwrap();
+    std::fs::set_permissions(&readonly, std::fs::Permissions::from_mode(0o500)).unwrap();
+    let shared = root.path().join("shared");
+    std::fs::create_dir(&shared).unwrap();
+    std::fs::set_permissions(&shared, std::fs::Permissions::from_mode(0o777)).unwrap();
+    let dirs = [
+        readonly.join("cache"),
+        shared.clone(),
+        PathBuf::from("/proc/running-process-nope"),
+    ];
+    let loader = materialize_loader(&host_loader(), "ape-loader-test-fallback", &dirs).unwrap();
+    assert!(loader.starts_with("/proc/self/fd"), "got {}", loader.display());
+    assert!(
+        std::fs::read_dir(&shared).unwrap().next().is_none(),
+        "nothing planted in a shared directory"
+    );
+    let output = run_loader(&loader, &["fallback"]);
+    assert_eq!(stdout(&output), "hello world fallback\n", "{output:?}");
+}
+
+#[cfg(feature = "ape-loader")]
+#[test]
+fn a_symlinked_cache_directory_is_rejected() {
+    let root = scratch();
+    std::fs::create_dir(root.path().join("real")).unwrap();
+    std::os::unix::fs::symlink(root.path().join("real"), root.path().join("link")).unwrap();
+    assert!(install_in(&root.path().join("link"), &host_loader(), "l").is_none());
+}
+
+#[cfg(feature = "ape-loader")]
+#[test]
+fn a_tampered_or_truncated_install_is_replaced() {
+    let dir = scratch();
+    let bytes = host_loader();
+    let path = install_in(dir.path(), &bytes, "ape-loader-t").expect("install");
+    for bad in [&b"#!/bin/sh\nexit 66\n"[..], &bytes[..bytes.len() / 2]] {
+        std::fs::write(&path, bad).unwrap();
+        assert_eq!(install_in(dir.path(), &bytes, "ape-loader-t"), Some(path.clone()));
+        assert_eq!(std::fs::read(&path).unwrap(), bytes);
+        let output = run_loader(&path, &["repaired"]);
+        assert_eq!(stdout(&output), "hello world repaired\n", "{output:?}");
+    }
+    // A lost exec bit is repaired too.
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+    install_in(dir.path(), &bytes, "ape-loader-t").unwrap();
+    assert_ne!(
+        std::fs::metadata(&path).unwrap().permissions().mode() & 0o100,
+        0
+    );
+}
+
+#[cfg(feature = "ape-loader")]
+#[test]
+fn concurrent_installs_converge_without_partial_files() {
+    let dir = scratch();
+    let cache = dir.path().join("fresh/ape");
+    let bytes = host_loader();
+    let paths: Vec<_> = std::thread::scope(|scope| {
+        let handles: Vec<_> = (0..32)
+            .map(|_| scope.spawn(|| install_in(&cache, &bytes, "ape-loader-race")))
+            .collect();
+        handles.into_iter().map(|handle| handle.join().unwrap()).collect()
+    });
+    assert!(paths
+        .iter()
+        .all(|path| path.as_deref() == Some(cache.join("ape-loader-race").as_path())));
+    let entries: Vec<_> = std::fs::read_dir(&cache)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name())
+        .collect();
+    assert_eq!(
+        entries,
+        vec![OsString::from("ape-loader-race")],
+        "no stray staging files"
+    );
+    assert_eq!(
+        std::fs::metadata(&cache).unwrap().permissions().mode() & 0o777,
+        0o700
+    );
+    let mut installed = Vec::new();
+    File::open(cache.join("ape-loader-race"))
+        .unwrap()
+        .read_to_end(&mut installed)
+        .unwrap();
+    assert_eq!(installed, bytes);
 }

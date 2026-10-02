@@ -17,6 +17,11 @@ RUST_SOURCE_ROOTS = (ROOT / "crates", ROOT / "testbins")
 # crate. Daemon/client/trampoline code that used to live in sibling
 # crates now lives at `crates/running-process/src/{daemon,client,bin}/`.
 ALLOWED_RUST_COMMAND_NEW = {
+    # APE launch planning: `platform::ape::command` / `tokio_command` only
+    # construct the command (the planned loader with the image as its first
+    # argument, or the program unchanged). Nothing is spawned there; callers
+    # spawn through the sanitized layers.
+    Path("crates/running-process-platform-internal/src/platform/ape.rs"),
     # APE launch recovery: these cfg(test) files start fixture images that the
     # kernel refuses (ENOEXEC), to prove the retry runs them through a loader
     # and leaves every other spawn error alone. Production spawns go through

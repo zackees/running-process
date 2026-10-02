@@ -1,24 +1,30 @@
 # Changelog
 
-## 4.10.16 — Actually Portable Executable launch recovery
+## 4.10.16 — Actually Portable Executable launches
 
 - Runs Cosmopolitan Actually Portable Executables (APE) on hosts with no
-  `binfmt_misc` entry for them, such as stock NixOS. The kernel refuses such an
-  image with `ENOEXEC` and only a shell knew to retry, so the same program
-  that ran from a terminal failed with "Exec format error" from every spawn
-  path here. Recovery runs only after the host has refused the image, so
-  native executables pay nothing.
-- A `SpawnSpec` (and so `AsyncProcess`) runs the image through a loader
-  directly: an installed `ape`, else the loader embedded in the image (new
-  default `ape-loader` feature, extracted to the prologue's own
-  `${TMPDIR:-$HOME}/.ape-<version>` cache and reused only when byte-identical),
-  else `/bin/sh`. This works under a cleared environment.
-- Caller-built commands (`NativeProcess`, bounded runs, `spawn_sync`,
-  `spawn_tokio`) keep every caller setting and are retried once through
-  `execvp`, whose POSIX `ENOEXEC` rule runs the image's prologue, after the
-  embedded loader has been placed where that prologue looks for it.
-- `running_process::ape` exposes detection, loader planning, and the retry
-  for callers that launch processes some other way.
+  `binfmt_misc` entry for them, such as stock NixOS, where `posix_spawn`
+  fails with `ENOEXEC` ("Exec format error"). This is fbuild's APE loader
+  contract, now owned here so every consumer shares one implementation.
+- Loader precedence: `RUNNING_PROCESS_APE_LOADER` (or `ApeOptions::loader`),
+  then the loader embedded in the image (Linux, new default `ape-loader`
+  feature), then `ape` on `PATH`, `/usr/bin/ape`, `/usr/local/bin/ape`, then
+  `/bin/sh`, then `sh` on `PATH`. The embedded loader is inflated, validated
+  as a static ELF for the host CPU, and installed content-addressed into the
+  first owner-only, exec-capable directory (`RUNNING_PROCESS_APE_CACHE_DIR`,
+  then the XDG cache, runtime and temporary directories), else a sealed
+  `memfd`. It needs no `sh`, coreutils, `gzip`, `PATH` or `$TMPDIR` in the
+  child.
+- `SpawnSpec`/`AsyncProcess` and argv `NativeProcess`es plan the loader before
+  spawning; `ape::command` / `ape::tokio_command` do the same for callers
+  that build their own command. Caller-built commands (`spawn_sync`,
+  `spawn_tokio`, bounded runs) are retried once after a refusal through
+  `execvp`'s POSIX `ENOEXEC` shell rule.
+- `ape::fork_guard` / `ape::exclusive_fork_guard`: a process-wide fork lock
+  (Go's `ForkLock`) held across this crate's spawns and while a loader is
+  written, so a concurrently forked child cannot hold it open (`ETXTBSY`).
+- CI links glibc targets with `--build-id=sha1`, as musl already was: soldr's
+  clang + lld emits no GNU build ID unless asked.
 
 ## 4.10.15 — ConPTY sidecar console-host tracking
 

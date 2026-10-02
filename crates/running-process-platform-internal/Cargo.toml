@@ -8,6 +8,8 @@ repository.workspace = true
 homepage.workspace = true
 description = "Blessed platform process operations for running-process (implementation detail)"
 publish = true
+# The cosmocc APE fixture is test-only; keep its binary out of the package.
+exclude = ["tests/data/ape-hello/hello.com"]
 
 [lints]
 workspace = true

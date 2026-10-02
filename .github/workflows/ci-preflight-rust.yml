@@ -58,9 +58,11 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: "always"
-  # Link musl binaries with a GNU build-id note. soldr links these targets
-  # through its managed clang + lld, which (unlike the distro gcc the lanes
-  # used before CACHE-025) emits no build-id unless asked. The probe only
+  # Link Linux binaries (musl and, since CACHE-025, glibc) with a GNU build-id
+  # note. soldr links these targets through its managed clang + lld, which
+  # (unlike the distro gcc the lanes used before CACHE-025) emits no build-id
+  # unless asked; `current_executable_exposes_a_gnu_build_id` failed on the
+  # first full-matrix PR after it. The probe only
   # attributes frames to an ELF module whose mapped PT_NOTE build-id matches
   # the file on disk, so without the note the probe's own tests cannot find
   # their module (`loaded_elf_owner_carries_its_pt_note_build_id`,
@@ -68,6 +70,8 @@ env:
   # prescribe for local soldr links (docs/process-output-shutdown.md).
   CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_RUSTFLAGS: "-C link-arg=-Wl,--build-id=sha1"
   CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_RUSTFLAGS: "-C link-arg=-Wl,--build-id=sha1"
+  CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: "-C link-arg=-Wl,--build-id=sha1"
+  CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS: "-C link-arg=-Wl,--build-id=sha1"
 
 jobs:
   warm:

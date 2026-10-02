@@ -3,7 +3,7 @@
 use std::io;
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::process::CommandExt;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// An APE image is not a native macOS executable.
 pub const APE_NEEDS_LOADER: bool = true;
@@ -25,6 +25,21 @@ pub const APE_EXECVP_SHELL_FALLBACK: bool = true;
 /// The kernel refused the image's format.
 pub fn is_exec_format_error(error: &io::Error) -> bool {
     error.raw_os_error() == Some(libc::ENOEXEC)
+}
+
+/// Whether metadata carries any execute permission bit.
+pub fn is_executable(metadata: &std::fs::Metadata) -> bool {
+    metadata.permissions().mode() & 0o111 != 0
+}
+
+/// No extracted loader is installed on macOS ([`APE_EMBEDDED_LOADER`]).
+pub fn default_loader_dirs() -> Vec<PathBuf> {
+    Vec::new()
+}
+
+/// No extracted loader is installed on macOS ([`APE_EMBEDDED_LOADER`]).
+pub fn materialize_loader(_bytes: &[u8], _name: &str, _dirs: &[PathBuf]) -> Option<PathBuf> {
+    None
 }
 
 /// Make an extracted loader executable by its owner and readable by others.

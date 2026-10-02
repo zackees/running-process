@@ -1,249 +1,236 @@
 use super::*;
 
-/// The Linux branch of a Cosmopolitan 3.x prologue, as `cosmocc` emits it,
-/// trimmed of the binary bytes that precede it.
-const PROLOGUE: &str = r#"MZqFpD='
-' <<'justinew1b5s9'
-justinew1b5s9
-#'"
-o=$(command -v "$0")
-[ x"$1" != x--assimilate ] && type ape >/dev/null 2>&1 && exec ape "$o" "$@"
-t="${TMPDIR:-${HOME:-.}}/.ape-1.10"
-[ x"$1" != x--assimilate ] && [ -x "$t" ] && exec "$t" "$o" "$@"
-m=$(uname -m 2>/dev/null) || m=x86_64
-if [ ! -d /Applications ]; then
-if [ x"$1" = x--assimilate ]; then
-exit
-fi
-else
-if [ "$m" = x86_64 ] || [ "$m" = amd64 ]; then
-mkdir -p "${t%/*}" ||exit
-dd if="$o" skip=111     count=222        bs=1 2>/dev/null | gzip -dc >"$t.$$" ||exit
-dd if="$t.$$" of="$t.$$" skip=5 count=8 bs=64 conv=notrunc 2>/dev/null ||exit
-exec "$t" "$o" "$@"
-fi
-fi
-if [ ! -d /Applications ]; then
-if [ "$m" = x86_64 ] || [ "$m" = amd64 ]; then
-mkdir -p "${t%/*}" ||exit
-dd if="$o" skip=754624     count=4206       bs=1 2>/dev/null | gzip -dc >"$t.$$" ||exit
-exec "$t" "$o" "$@"
-fi
-if [ "$m" = aarch64 ] || [ "$m" = arm64 ]; then
-mkdir -p "${t%/*}" ||exit
-dd if="$o" skip=758830     count=4928       bs=1 2>/dev/null | gzip -dc >"$t.$$" ||exit
-exec "$t" "$o" "$@"
-fi
-fi
-echo "$0: this ape program lacks $m support" >&2
-exit 127
-"#;
+/// Minimal APE-shaped script: the `MZqFpD='...'` header is a shell
+/// assignment, exactly like a real cosmocc image's prologue.
+const FAKE_APE: &str = "MZqFpD='\n'\necho fake-ape \"$@\"\n";
 
-fn scratch() -> tempfile::TempDir {
-    tempfile::tempdir().expect("scratch directory")
+/// The checked-in cosmocc hello-world (`tests/data/ape-hello`): a fat
+/// x86_64 + aarch64 image that prints `hello world` and its arguments.
+pub(crate) fn hello_fixture() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data/ape-hello/hello.com")
 }
 
-fn write_file(path: &Path, bytes: &[u8]) {
-    std::fs::write(path, bytes).expect("write fixture");
-    crate::ape_mark_executable(path).expect("mark fixture executable");
+fn write_exe(dir: &Path, name: &str, body: &str) -> PathBuf {
+    let path = dir.join(name);
+    std::fs::write(&path, body).unwrap();
+    crate::ape_mark_executable(&path).unwrap();
+    path
 }
 
-#[test]
-fn every_ape_magic_is_recognized_and_nothing_else() {
-    for magic in MAGICS {
-        let mut header = magic.to_vec();
-        header.extend_from_slice(b"\n'\n");
-        assert!(
-            is_ape_header(&header),
-            "{:?}",
-            String::from_utf8_lossy(magic)
-        );
-    }
-    for other in [
-        &b"\x7fELF\x02\x01\x01"[..],
-        b"MZ\x90\x00\x03",
-        b"#!/bin/sh\n",
-        b"MZqFpD",
-        b"",
-    ] {
-        assert!(!is_ape_header(other), "{other:?}");
+fn options(path: Option<&OsStr>, loader: Option<&str>) -> ApeOptions {
+    ApeOptions {
+        path: path.map(OsStr::to_os_string),
+        loader: loader.map(OsString::from),
+        cache_dirs: Vec::new(),
     }
 }
 
 #[test]
-fn ape_files_are_detected_by_content_and_missing_files_are_not_ape() {
-    let dir = scratch();
-    let ape = dir.path().join("tool.com");
-    let native = dir.path().join("tool");
-    write_file(&ape, PROLOGUE.as_bytes());
-    write_file(&native, b"\x7fELF\x02\x01\x01\x00");
-    assert!(is_ape_file(&ape));
-    assert!(!is_ape_file(&native));
+fn recognizes_every_ape_magic_and_rejects_other_formats() {
+    assert!(is_ape_header(b"MZqFpD='\n\n\0"));
+    assert!(is_ape_header(b"jartsr='\n"));
+    assert!(is_ape_header(b"APEDBG='\n"));
+    assert!(!is_ape_header(b"MZ\x90\0\x03\0\0\0")); // plain PE
+    assert!(!is_ape_header(b"\x7fELF\x02\x01\x01\0")); // ELF
+    assert!(!is_ape_header(b"#!/bin/sh\n"));
+    assert!(!is_ape_header(b"MZqF"));
+    assert!(!is_ape_header(b""));
+}
+
+#[test]
+fn ape_files_are_detected_by_content_and_unreadable_files_are_not_ape() {
+    let dir = tempfile::tempdir().unwrap();
+    assert!(is_ape_file(&hello_fixture()));
+    assert!(is_ape_file(&write_exe(dir.path(), "fake", FAKE_APE)));
+    assert!(!is_ape_file(&write_exe(
+        dir.path(),
+        "script",
+        "#!/bin/sh\n"
+    )));
     assert!(!is_ape_file(&dir.path().join("missing")));
     assert!(!is_ape_file(dir.path()));
 }
 
 #[test]
-fn the_linux_branch_names_each_machines_loader() {
-    assert_eq!(
-        embedded_loader(PROLOGUE.as_bytes(), "x86_64"),
-        Some(EmbeddedLoader {
-            offset: 754_624,
-            len: 4206
-        }),
-        "the macOS x86_64 block earlier in the prologue must not be chosen"
-    );
-    assert_eq!(
-        embedded_loader(PROLOGUE.as_bytes(), "aarch64"),
-        Some(EmbeddedLoader {
-            offset: 758_830,
-            len: 4928
-        })
-    );
-    assert_eq!(embedded_loader(PROLOGUE.as_bytes(), "riscv64"), None);
-    assert_eq!(embedded_loader(b"MZqFpD='\n'\nexit 1\n", "x86_64"), None);
+fn a_host_that_runs_ape_natively_plans_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let ape = write_exe(dir.path(), "tool", FAKE_APE);
+    let plan = plan_launch(ape.as_os_str(), None, &options(None, Some("/bin/sh")));
+    assert_eq!(plan.is_none(), !NEEDS_LOADER);
 }
 
 #[test]
-fn the_prologue_cache_name_is_read_and_validated() {
+fn a_program_that_is_not_ape_is_left_alone() {
+    let dir = tempfile::tempdir().unwrap();
+    let script = write_exe(dir.path(), "tool", "#!/bin/sh\necho hi\n");
+    let explicit = options(None, Some("/bin/sh"));
+    assert_eq!(plan_launch(script.as_os_str(), None, &explicit), None);
     assert_eq!(
-        loader_cache_name(PROLOGUE.as_bytes()).as_deref(),
-        Some(".ape-1.10")
-    );
-    assert_eq!(
-        loader_cache_name(b"t=\"${TMPDIR:-${HOME:-.}}/../../etc/passwd\""),
-        None
-    );
-    assert_eq!(loader_cache_name(b"MZqFpD='\n"), None);
-}
-
-#[test]
-fn child_environment_applies_edits_over_the_inherited_values() {
-    let edits = [
-        (OsStr::new("PATH"), Some(OsStr::new("/opt/bin"))),
-        (OsStr::new("HOME"), None),
-        (OsStr::new("UNRELATED"), Some(OsStr::new("x"))),
-    ];
-    let edited = ChildEnvironment::with_overrides(false, edits);
-    assert_eq!(edited.path.as_deref(), Some(OsStr::new("/opt/bin")));
-    assert_eq!(edited.home, None);
-    assert_eq!(edited.tmpdir, ChildEnvironment::inherited().tmpdir);
-
-    let cleared =
-        ChildEnvironment::with_overrides(true, [(OsStr::new("TMPDIR"), Some(OsStr::new("/t")))]);
-    assert_eq!(
-        cleared,
-        ChildEnvironment {
-            path: None,
-            tmpdir: Some(OsString::from("/t")),
-            home: None,
-        }
-    );
-    assert_eq!(cleared.prologue_cache_dir(), Some(PathBuf::from("/t")));
-    let home_only = ChildEnvironment {
-        tmpdir: Some(OsString::new()),
-        home: Some(OsString::from("/h")),
-        ..ChildEnvironment::default()
-    };
-    assert_eq!(home_only.prologue_cache_dir(), Some(PathBuf::from("/h")));
-    assert_eq!(ChildEnvironment::default().prologue_cache_dir(), None);
-}
-
-#[test]
-fn programs_resolve_like_execvp() {
-    let dir = scratch();
-    let bin = dir.path().join("bin");
-    std::fs::create_dir(&bin).unwrap();
-    write_file(&bin.join("tool"), PROLOGUE.as_bytes());
-    let environment = ChildEnvironment {
-        path: Some(std::env::join_paths([dir.path(), &bin]).unwrap()),
-        ..ChildEnvironment::default()
-    };
-
-    assert_eq!(
-        resolve_program(OsStr::new("tool"), None, &environment),
-        Some(bin.join("tool"))
-    );
-    assert_eq!(
-        resolve_program(OsStr::new("absent"), None, &environment),
-        None
-    );
-    assert_eq!(
-        resolve_program(OsStr::new("tool"), None, &ChildEnvironment::default()),
-        None
-    );
-    assert_eq!(
-        resolve_program(OsStr::new("bin/tool"), Some(dir.path()), &environment),
-        Some(bin.join("tool"))
-    );
-    assert_eq!(
-        resolve_program(OsStr::new("/abs/tool"), Some(dir.path()), &environment),
-        Some(PathBuf::from("/abs/tool"))
-    );
-}
-
-#[test]
-fn a_native_program_has_no_ape_plan() {
-    let dir = scratch();
-    let native = dir.path().join("native");
-    write_file(&native, b"\x7fELF\x02\x01\x01\x00");
-    let environment = ChildEnvironment::default();
-    assert_eq!(plan_launch(native.as_os_str(), None, &environment), None);
-    assert_eq!(
-        plan_launch(dir.path().join("missing").as_os_str(), None, &environment),
+        plan_launch(dir.path().join("missing").as_os_str(), None, &explicit),
         None
     );
 }
 
 #[test]
-fn an_installed_ape_loader_is_preferred_and_receives_the_image_first() {
-    let dir = scratch();
-    let image = dir.path().join("tool.com");
-    write_file(&image, PROLOGUE.as_bytes());
-    let loaders = dir.path().join("loaders");
-    std::fs::create_dir(&loaders).unwrap();
-    write_file(&loaders.join("ape"), b"loader");
-    let environment = ChildEnvironment {
-        path: Some(std::env::join_paths([dir.path(), &loaders]).unwrap()),
-        ..ChildEnvironment::default()
-    };
-
-    let planned = plan_launch(OsStr::new("tool.com"), None, &environment);
+fn an_explicit_loader_wins() {
     if !NEEDS_LOADER {
-        assert_eq!(planned, None, "this host runs APE images natively");
         return;
     }
-    let launch = planned.expect("APE image with a loader on PATH");
-    assert_eq!(launch.kind, LoaderKind::System);
-    assert_eq!(launch.loader, loaders.join("ape"));
-    assert_eq!(launch.image, image);
+    let dir = tempfile::tempdir().unwrap();
+    let ape = write_exe(dir.path(), "tool", FAKE_APE);
+    let plan = plan_launch(
+        ape.as_os_str(),
+        None,
+        &options(None, Some("/opt/cosmo/ape")),
+    )
+    .expect("APE must be planned");
+    assert_eq!(plan.kind, LoaderKind::Explicit);
+    assert_eq!(plan.loader, PathBuf::from("/opt/cosmo/ape"));
+    assert_eq!(plan.image, ape);
     assert_eq!(
-        launch.args(["--flag", "value"]),
+        plan.args(["a", "b c"]),
         vec![
-            image.into_os_string(),
-            OsString::from("--flag"),
-            OsString::from("value")
+            ape.into_os_string(),
+            OsString::from("a"),
+            OsString::from("b c")
         ]
     );
 }
 
 #[test]
+fn a_bare_name_resolves_on_path_and_finds_an_ape_loader_there() {
+    if !NEEDS_LOADER {
+        return;
+    }
+    let bin = tempfile::tempdir().unwrap();
+    // A shell-only image carries no embedded loader, so `ape` is next.
+    let ape = write_exe(bin.path(), "tool", FAKE_APE);
+    let loader = write_exe(bin.path(), "ape", "#!/bin/sh\n");
+    let plan = plan_launch(
+        OsStr::new("tool"),
+        None,
+        &options(Some(bin.path().as_os_str()), None),
+    )
+    .expect("APE on PATH must be planned");
+    assert_eq!(plan.image, ape);
+    assert_eq!(plan.kind, LoaderKind::System);
+    assert_eq!(plan.loader, loader);
+}
+
+#[test]
+fn without_any_ape_loader_the_shell_runs_the_prologue() {
+    if !NEEDS_LOADER || !Path::new(SHELL).is_file() {
+        return;
+    }
+    if SYSTEM_LOADERS
+        .iter()
+        .any(|loader| Path::new(loader).exists())
+    {
+        return; // an installed `ape` correctly wins on this host
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let ape = write_exe(dir.path(), "tool", FAKE_APE);
+    let plan = plan_launch(ape.as_os_str(), None, &options(None, None)).expect("planned");
+    assert_eq!(plan.kind, LoaderKind::Shell);
+    assert_eq!(plan.loader, PathBuf::from(SHELL));
+}
+
+#[test]
+fn a_relative_program_resolves_against_the_child_cwd() {
+    if !NEEDS_LOADER {
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir(dir.path().join("bin")).unwrap();
+    let ape = write_exe(&dir.path().join("bin"), "tool", FAKE_APE);
+    let plan = plan_launch(
+        OsStr::new("bin/tool"),
+        Some(dir.path()),
+        &options(None, Some("/bin/sh")),
+    )
+    .expect("relative APE must be planned");
+    assert_eq!(plan.image, ape);
+}
+
+#[test]
+fn options_apply_child_environment_edits() {
+    let edits = [
+        (OsStr::new("PATH"), Some(OsStr::new("/opt/bin"))),
+        (OsStr::new(LOADER_ENV), Some(OsStr::new("/opt/ape"))),
+        (OsStr::new(CACHE_DIR_ENV), Some(OsStr::new("/c"))),
+        (OsStr::new("UNRELATED"), Some(OsStr::new("x"))),
+    ];
+    let edited = ApeOptions::with_overrides(true, edits);
+    assert_eq!(edited.path.as_deref(), Some(OsStr::new("/opt/bin")));
+    assert_eq!(edited.loader.as_deref(), Some(OsStr::new("/opt/ape")));
+    assert_eq!(edited.cache_dirs.first(), Some(&PathBuf::from("/c")));
+    assert_eq!(
+        &edited.cache_dirs[1..],
+        crate::ape_default_loader_dirs().as_slice(),
+        "host defaults follow the requested directory"
+    );
+
+    let cleared = ApeOptions::with_overrides(true, [(OsStr::new("PATH"), None)]);
+    assert_eq!(cleared.path, None);
+    assert_eq!(cleared.loader, None);
+    let empty = ApeOptions::with_overrides(true, [(OsStr::new(LOADER_ENV), Some(OsStr::new("")))]);
+    assert_eq!(empty.loader, None, "an empty override is unset");
+}
+
+#[test]
 fn a_spawn_error_that_is_not_a_refused_image_is_never_retried() {
-    let dir = scratch();
-    let image = dir.path().join("tool.com");
-    write_file(&image, PROLOGUE.as_bytes());
+    let dir = tempfile::tempdir().unwrap();
+    let image = write_exe(dir.path(), "tool", FAKE_APE);
     let mut command = std::process::Command::new(&image);
     let not_found = io::Error::from(io::ErrorKind::NotFound);
     assert!(!is_exec_format_error(&not_found));
     assert!(!prepare_std_retry(&mut command, &not_found));
 }
 
+#[test]
+fn prologue_parse_selects_the_linux_branch_per_cpu() {
+    let mut prologue = Vec::new();
+    File::open(hello_fixture())
+        .unwrap()
+        .take(64 * 1024)
+        .read_to_end(&mut prologue)
+        .unwrap();
+    // The macOS x86_64 branch shares the blob but patches it; the Linux one
+    // is the last plain extraction.
+    assert_eq!(
+        loader_blob_range(&prologue, "x86_64"),
+        Some((275_392, 4180))
+    );
+    assert_eq!(
+        loader_blob_range(&prologue, "aarch64"),
+        Some((279_572, 4928))
+    );
+    assert_eq!(loader_blob_range(&prologue, "riscv64"), None);
+}
+
+#[test]
+fn the_fork_lock_admits_spawns_together_and_writers_alone() {
+    let first = fork_guard();
+    let second = fork_guard();
+    drop((first, second));
+    drop(exclusive_fork_guard());
+    let mut attempts = 0;
+    let result = retry_while_busy(|| {
+        attempts += 1;
+        if attempts < 3 {
+            Err(io::Error::from(io::ErrorKind::ExecutableFileBusy))
+        } else {
+            Ok(attempts)
+        }
+    });
+    assert_eq!(result.unwrap(), 3);
+}
+
 #[cfg(feature = "ape-loader")]
 mod embedded {
     use super::*;
 
-    /// Frame raw deflate output as a gzip member with every optional header.
-    pub(super) fn gzip(payload: &[u8]) -> Vec<u8> {
+    fn gzip(payload: &[u8]) -> Vec<u8> {
         let mut member = vec![0x1f, 0x8b, 8, 0x04 | 0x08 | 0x10 | 0x02, 0, 0, 0, 0, 0, 3];
         member.extend_from_slice(&3u16.to_le_bytes());
         member.extend_from_slice(b"xyz");
@@ -254,29 +241,6 @@ mod embedded {
         member.extend_from_slice(&0u32.to_le_bytes());
         member.extend_from_slice(&(payload.len() as u32).to_le_bytes());
         member
-    }
-
-    /// An image whose prologue points every machine at `payload`.
-    pub(super) fn image_with_loader(path: &Path, payload: &[u8]) {
-        let compressed = gzip(payload);
-        let mut prologue = Vec::new();
-        let header = |offset: usize| {
-            format!(
-                "MZqFpD='\n'\nt=\"${{TMPDIR:-${{HOME:-.}}}}/.ape-9.99\"\nif [ ! -d /Applications ]; then\n\
-                 if [ \"$m\" = {machine} ] || [ \"$m\" = amd64 ]; then\n\
-                 dd if=\"$o\" skip={offset:<10} count={len:<10} bs=1 2>/dev/null | gzip -dc\n\
-                 fi\nfi\nexit 127\n",
-                machine = host_machine(),
-                len = compressed.len(),
-            )
-        };
-        // The offset is printed padded, so the header length does not depend
-        // on its value.
-        let offset = header(0).len();
-        prologue.extend_from_slice(header(offset).as_bytes());
-        assert_eq!(prologue.len(), offset);
-        prologue.extend_from_slice(&compressed);
-        write_file(path, &prologue);
     }
 
     #[test]
@@ -299,71 +263,49 @@ mod embedded {
     }
 
     #[test]
-    fn the_embedded_loader_is_extracted_for_this_machine() {
-        let dir = scratch();
-        let image = dir.path().join("tool.com");
-        image_with_loader(&image, b"\x7fELF fake loader");
-        assert_eq!(
-            extract_embedded_loader(&image, host_machine()).unwrap(),
-            Some(b"\x7fELF fake loader".to_vec())
-        );
-        assert_eq!(extract_embedded_loader(&image, "pdp11").unwrap(), None);
+    fn both_cpus_loaders_are_extracted_from_the_fat_fixture() {
+        let x86 = extract_loader(&hello_fixture(), "x86_64").expect("x86_64 loader");
+        let arm = extract_loader(&hello_fixture(), "aarch64").expect("aarch64 loader");
+        assert!(x86.starts_with(b"\x7fELF") && arm.starts_with(b"\x7fELF"));
+        assert_ne!(x86, arm);
+        assert_eq!(extract_loader(&hello_fixture(), "riscv64"), None);
     }
 
+    /// Hostile/corrupt images never panic and never yield a loader.
     #[test]
-    fn the_loader_lands_where_the_prologue_looks_and_is_reused_only_if_identical() {
-        let dir = scratch();
-        let image = dir.path().join("tool.com");
-        image_with_loader(&image, b"\x7fELF fake loader");
-        let cache = dir.path().join("cache");
-        let environment = ChildEnvironment {
-            tmpdir: Some(cache.clone().into_os_string()),
-            ..ChildEnvironment::default()
-        };
-        if !EMBEDDED_LOADER {
-            assert_eq!(
-                materialize_embedded_loader(&image, &environment, false),
-                None
-            );
-            return;
-        }
+    fn corrupt_images_yield_no_embedded_loader() {
+        let dir = tempfile::tempdir().unwrap();
+        let real = std::fs::read(hello_fixture()).unwrap();
 
-        let loader =
-            materialize_embedded_loader(&image, &environment, false).expect("loader materialized");
-        assert_eq!(loader, cache.join(".ape-9.99"));
-        assert_eq!(std::fs::read(&loader).unwrap(), b"\x7fELF fake loader");
+        let truncated = dir.path().join("truncated");
+        std::fs::write(&truncated, &real[..20_000]).unwrap();
+        assert_eq!(extract_loader(&truncated, "x86_64"), None);
 
-        std::fs::write(&loader, b"tampered").unwrap();
-        assert_eq!(
-            materialize_embedded_loader(&image, &environment, false),
-            Some(loader.clone())
-        );
-        assert_eq!(std::fs::read(&loader).unwrap(), b"\x7fELF fake loader");
+        let mut garbage = real.clone();
+        garbage[275_392..275_392 + 4180].fill(0xA5);
+        let garbled = dir.path().join("garbled");
+        std::fs::write(&garbled, &garbage).unwrap();
+        assert_eq!(extract_loader(&garbled, "x86_64"), None);
 
-        assert_eq!(
-            materialize_embedded_loader(&image, &ChildEnvironment::default(), false),
-            None,
-            "without TMPDIR or HOME the prologue would look in its working directory"
-        );
-        let leftovers: Vec<_> = std::fs::read_dir(&cache)
-            .unwrap()
-            .map(|entry| entry.unwrap().file_name())
-            .collect();
-        assert_eq!(leftovers, vec![OsString::from(".ape-9.99")]);
-    }
+        let huge = dir.path().join("huge-range");
+        std::fs::write(
+            &huge,
+            "MZqFpD='\n'\nif [ \"$m\" = x86_64 ]; then\ndd if=\"$o\" skip=18446744073709551615 count=99 bs=1 2>/dev/null | gzip -dc >\"$t.$$\" ||exit\nfi\n",
+        )
+        .unwrap();
+        assert_eq!(extract_loader(&huge, "x86_64"), None);
 
-    #[test]
-    fn a_payload_that_is_not_an_elf_loader_is_never_materialized() {
-        let dir = scratch();
-        let image = dir.path().join("tool.com");
-        image_with_loader(&image, b"#!/bin/sh\necho not a loader\n");
-        let environment = ChildEnvironment {
-            tmpdir: Some(dir.path().as_os_str().to_os_string()),
-            ..ChildEnvironment::default()
-        };
-        assert_eq!(
-            materialize_embedded_loader(&image, &environment, false),
-            None
-        );
+        // A valid gzip of a non-ELF payload is rejected too.
+        let member = gzip(b"#!/bin/sh\necho pwned\n");
+        let mut fake = format!(
+            "MZqFpD='\n'\nif [ \"$m\" = x86_64 ]; then\ndd if=\"$o\" skip=200 count={} bs=1 2>/dev/null | gzip -dc >\"$t.$$\" ||exit\nfi\n",
+            member.len()
+        )
+        .into_bytes();
+        fake.resize(200, b'\n');
+        fake.extend_from_slice(&member);
+        let not_elf = dir.path().join("not-elf");
+        std::fs::write(&not_elf, &fake).unwrap();
+        assert_eq!(extract_loader(&not_elf, "x86_64"), None);
     }
 }

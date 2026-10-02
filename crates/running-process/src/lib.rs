@@ -1325,11 +1325,30 @@ impl NativeProcess {
                 let mut command = match &self.config.command {
                     CommandSpec::Shell(command) => shell_command(command),
                     CommandSpec::Argv(argv) => {
-                        let mut command = Command::new(&argv[0]);
-                        if argv.len() > 1 {
-                            command.args(&argv[1..]);
+                        // An APE image runs through its planned loader on a
+                        // host that cannot exec it (see `crate::ape`).
+                        let options = platform::ape::ApeOptions::with_overrides(
+                            self.config.env.is_some(),
+                            self.config.env.iter().flatten().map(|(key, value)| {
+                                (std::ffi::OsStr::new(key), Some(std::ffi::OsStr::new(value)))
+                            }),
+                        );
+                        match platform::ape::plan_launch(
+                            std::ffi::OsStr::new(&argv[0]),
+                            self.config.cwd.as_deref(),
+                            &options,
+                        ) {
+                            Some(launch) => {
+                                let mut command = Command::new(&launch.loader);
+                                command.args(launch.args(&argv[1..]));
+                                command
+                            }
+                            None => {
+                                let mut command = Command::new(&argv[0]);
+                                command.args(&argv[1..]);
+                                command
+                            }
                         }
-                        command
                     }
                 };
                 if let Some(cwd) = &self.config.cwd {
