@@ -138,12 +138,16 @@ jobs:
         run: uv run --no-sync --module ci.run_logged logs/build-wheel.log -- uv run --no-sync --module ci.build_wheel --${{ inputs.build-mode || 'dev' }}
 
       # Backend smoke: exercise the soldr PEP 517 backend end-to-end in an
-      # isolated build env with soldr resolved from PyPI. It runs with the
-      # build cache on, like every other soldr build here: CACHE-025 /
-      # CACHE-010 forbid a ZCCACHE_DISABLE kill switch, and the daemon
-      # identity clash that once motivated one (zackees/soldr#1300) is closed.
+      # isolated build env with soldr resolved from PyPI. That soldr is a
+      # different version/image from setup-soldr's, and only one daemon may
+      # own a soldr root, so it cannot start a daemon on setup-soldr's root
+      # ("soldr root ownership is busy"). Give it its own root, as soldr's
+      # diagnostic prescribes, rather than a ZCCACHE_DISABLE kill switch:
+      # the build cache stays on (CACHE-025 / CACHE-010).
       - name: soldr PEP 517 backend smoke
         if: ${{ runner.os == 'Linux' }}
+        env:
+          SOLDR_CACHE_DIR: ${{ runner.temp }}/soldr-backend-smoke
         run: uv build --wheel --out-dir dist-backend-smoke
 
       - name: Build sdist
