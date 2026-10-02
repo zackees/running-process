@@ -25,5 +25,4 @@ jobs:
       label: windows-arm
       rustdoc: false
       integration-test: true
-      cache-targets: false
       cache-key-suffix: registry

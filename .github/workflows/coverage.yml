@@ -48,21 +48,18 @@ jobs:
           restore-keys: |
             venv-ubuntu-24.04-py3.11-
 
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+      # Toolchain from rust-toolchain.toml plus soldr's zccache-backed build
+      # cache (CACHE-025, zackees/ci.yml#209). Saves are main-only (#1216).
+      - name: Set up soldr (toolchain + build cache)
+        uses: zackees/setup-soldr@v0
         with:
-          toolchain: "1.95.0"
-          components: clippy, rustfmt, llvm-tools-preview
+          cache: true
+          save-cache: ${{ github.ref == 'refs/heads/main' && 'auto' || 'false' }}
+          cache-key-suffix: ubuntu-24.04-coverage
+          prebuild-deps: none
 
-      - name: Rust build cache
-        uses: Swatinem/rust-cache@v2
-        with:
-          save-if: ${{ github.ref == 'refs/heads/main' }}
-          # Coverage target artifacts dominate its cache and are rebuilt on
-          # every source/lock change; retain registry downloads under a new key.
-          cache-targets: false
-          key: ubuntu-24.04-coverage-registry
-          cache-on-failure: true
+      - name: Install llvm-tools-preview
+        run: soldr rustup component add llvm-tools-preview --toolchain 1.95.0
 
       - name: Sync
         run: uv sync --frozen --group dev --no-install-project --python 3.11 -v

@@ -13,29 +13,42 @@ def check(text: str) -> list[str]:
 
 
 class CacheSaveGuardTests(unittest.TestCase):
-    def test_rust_cache_without_save_if_fails(self) -> None:
-        text = "    steps:\n      - uses: Swatinem/rust-cache@v2\n        with:\n          key: x\n"
-        self.assertEqual(len(check(text)), 1)
-
-    def test_rust_cache_main_gate_passes(self) -> None:
-        text = (
+    def test_rust_cache_is_banned_even_when_main_gated(self) -> None:
+        """CACHE-025 (zackees/ci.yml#209): no Swatinem step passes, gated or not."""
+        for text in (
+            "    steps:\n      - uses: Swatinem/rust-cache@v2\n        with:\n          key: x\n",
             "    steps:\n      - name: c\n        uses: Swatinem/rust-cache@v2\n"
-            "        with:\n          save-if: ${{ github.ref == 'refs/heads/main' }}\n"
-        )
+            "        with:\n          save-if: ${{ github.ref == 'refs/heads/main' }}\n",
+            "      - uses: Swatinem/rust-cache@v2\n        with:\n          save-if: false\n",
+        ):
+            messages = check(text)
+            self.assertEqual(len(messages), 1)
+            self.assertIn("CACHE-025", messages[0])
+
+    def test_setup_soldr_default_save_passes(self) -> None:
+        text = "      - uses: zackees/setup-soldr@v0\n        with:\n          cache: true\n"
         self.assertEqual(check(text), [])
 
-    def test_rust_cache_save_if_false_passes(self) -> None:
-        text = "      - uses: Swatinem/rust-cache@v2\n        with:\n          save-if: false\n"
-        self.assertEqual(check(text), [])
+    def test_setup_soldr_main_gated_save_passes(self) -> None:
+        for gate in (
+            "${{ github.ref == 'refs/heads/main' && 'auto' || 'false' }}",
+            '"false"',
+            "auto",
+        ):
+            text = (
+                "      - name: s\n        uses: zackees/setup-soldr@v0\n"
+                f"        with:\n          save-cache: {gate}\n"
+            )
+            self.assertEqual(check(text), [], gate)
 
-    def test_rust_cache_save_if_true_fails(self) -> None:
-        text = "      - uses: Swatinem/rust-cache@v2\n        with:\n          save-if: true\n"
+    def test_setup_soldr_unconditional_save_fails(self) -> None:
+        text = "      - uses: zackees/setup-soldr@v0\n        with:\n          save-cache: true\n"
         self.assertEqual(len(check(text)), 1)
 
-    def test_save_if_does_not_leak_from_next_step(self) -> None:
+    def test_save_cache_does_not_leak_from_next_step(self) -> None:
         text = (
-            "      - uses: Swatinem/rust-cache@v2\n"
-            "      - uses: Swatinem/rust-cache@v2\n        with:\n          save-if: false\n"
+            "      - uses: zackees/setup-soldr@v0\n        with:\n          save-cache: true\n"
+            "      - uses: zackees/setup-soldr@v0\n        with:\n          save-cache: false\n"
         )
         self.assertEqual(len(check(text)), 1)
 

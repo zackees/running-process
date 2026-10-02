@@ -46,15 +46,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
-      - uses: dtolnay/rust-toolchain@stable
+      # Toolchain from rust-toolchain.toml plus soldr's zccache-backed build
+      # cache (CACHE-025, zackees/ci.yml#209). Saves are main-only (#1216).
+      - name: Set up soldr (toolchain + build cache)
+        uses: zackees/setup-soldr@v0
         with:
-          toolchain: '1.95.0'
-      - uses: Swatinem/rust-cache@v2
-        with:
-          save-if: ${{ github.ref == 'refs/heads/main' }}
-          key: independent-fixture-${{ matrix.target }}
-      - name: Install build orchestrator
-        run: uv tool install soldr
+          cache: true
+          save-cache: ${{ github.ref == 'refs/heads/main' && 'auto' || 'false' }}
+          cache-key-suffix: independent-fixture-${{ matrix.target }}
+          prebuild-deps: none
       - name: Install pinned musl standard library
         run: soldr rustup target add ${{ matrix.target }} --toolchain 1.95.0
       - name: Check fixture orchestration safety
@@ -112,13 +112,16 @@ jobs:
         with:
           python-version: '3.11'
       - uses: astral-sh/setup-uv@v5
-      - uses: dtolnay/rust-toolchain@stable
+      # Toolchain from rust-toolchain.toml plus soldr's zccache-backed build
+      # cache (CACHE-025, zackees/ci.yml#209). Saves are main-only (#1216).
+      - name: Set up soldr (toolchain + build cache)
+        uses: zackees/setup-soldr@v0
         with:
-          toolchain: '1.95.0'
-      - uses: Swatinem/rust-cache@v2
-        with:
-          save-if: ${{ github.ref == 'refs/heads/main' }}
-      # The repository cargo_command wrapper uses Soldr when installed and
-      # the established CI bootstrap otherwise, avoiding a circular toolchain.
+          cache: true
+          save-cache: ${{ github.ref == 'refs/heads/main' && 'auto' || 'false' }}
+          cache-key-suffix: independent-scheduler-${{ matrix.os }}
+          prebuild-deps: none
+      # ci.independent_spawn builds through ci/soldr.py:cargo_command, which
+      # routes through the soldr setup-soldr just put on the runner.
       - name: Exercise Task Scheduler and native target control
         run: uv run --no-project --module ci.independent_spawn

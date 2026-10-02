@@ -5,23 +5,20 @@ name: CI Preflight (Reusable)
 # runs lint → unit tests → integration tests → rustdoc sequentially
 # against that single build.
 #
-# Previous shape was warm-then-fan-out: a warm job populated the
-# Swatinem target/ cache and 3-4 sub-worker jobs each restored it —
-# but every sub-worker still re-ran uv sync + the maturin dev wheel
-# build, and each job paid runner spin-up, checkout, toolchain
-# install, and cache download/upload. Sequential steps in one job
-# share the venv, target/, and wheel install directly: the build
-# happens once per platform, full stop.
+# Previous shape was warm-then-fan-out: a warm job populated a shared
+# target/ cache and 3-4 sub-worker jobs each restored it — but every
+# sub-worker still re-ran uv sync + the maturin dev wheel build, and
+# each job paid runner spin-up, checkout, toolchain install, and cache
+# download/upload. Sequential steps in one job share the venv, target/,
+# and wheel install directly: the build happens once per platform.
 #
-# Why NOT setup-soldr / soldr / zccache here:
-#
-#   running-process is UPSTREAM of zccache (which depends on the
-#   running-process broker for IPC) and of soldr (which uses zccache
-#   as its cache backend). Pulling `setup-soldr@v0` into running-
-#   process CI introduces a circular CI-tooling dependency where
-#   release-asset-discovery bugs in soldr (see soldr#806, #809)
-#   block the very repo soldr depends on.
-#
+# Rust toolchain + build cache: zackees/setup-soldr (fleet rule
+# CACHE-025, zackees/ci.yml#209). It provisions the toolchain from
+# rust-toolchain.toml and restores/saves soldr's zccache-backed build
+# cache. Cargo commands run as `soldr cargo ...` so they hit that cache;
+# the Python CI stages route through soldr automatically once it is on
+# the runner (ci/soldr.py:cargo_command).
+
 # Why debug profile, not release: this workflow is for the dev-loop
 # (every branch push + PR). Debug compiles are ~5x faster than
 # release; the slight runtime cost is irrelevant for tests. Release
@@ -50,10 +47,6 @@ on:
         description: Run both workspace Dylints (Linux x86 on every PR; macOS/Windows x86 on their opt-in tiers).
         type: boolean
         default: false
-      cache-targets:
-        description: Cache Cargo target artifacts. False retains only the Cargo registry.
-        type: boolean
-        default: true
       cache-key-suffix:
         description: Stable cache family name for this lane.
         type: string
@@ -94,41 +87,21 @@ jobs:
           restore-keys: |
             venv-${{ inputs.os }}-py3.11-
 
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+      # Toolchain from rust-toolchain.toml plus soldr's zccache-backed build
+      # cache (CACHE-025). `save-cache` is main-only (#1216): PR runs restore
+      # main's entries and never write a PR-scoped one.
+      - name: Set up soldr (toolchain + build cache)
+        uses: zackees/setup-soldr@v0
         with:
-          toolchain: "1.95.0"
-          components: clippy, rustfmt
+          cache: true
+          save-cache: ${{ github.ref == 'refs/heads/main' && 'auto' || 'false' }}
+          cache-key-suffix: ${{ inputs.label }}-${{ inputs.cache-key-suffix }}
+          prebuild-deps: none
 
       - name: Install cargo-nextest
         uses: taiki-e/install-action@v2
         with:
           tool: nextest
-
-      # rust-cache's post-job cleanup fails on a listed target dir that was
-      # never created (#1173); lanes that skip the fixture build still get one.
-      - name: Create tokio fixture target dir
-        run: mkdir -p testbins-tokio/target
-
-      - name: Rust build cache
-        uses: Swatinem/rust-cache@v2
-        with:
-          save-if: ${{ github.ref == 'refs/heads/main' }}
-          cache-targets: ${{ inputs.cache-targets }}
-          # Keep cache path discovery scoped to this checkout's workspace
-          # target root.  rust-cache's automatic discovery can otherwise
-          # register a nested `target/tests/target` path and fail its post-job
-          # cleanup when that optional directory was never created (#1173).
-          # testbins-tokio is a separate workspace built with --cfg
-          # tokio_unstable (#788) into its own target dir; list it so its
-          # dependencies are cached instead of rebuilt (~23 s) every run.
-          workspaces: |
-            . -> target
-            testbins-tokio -> target
-          # Key kept from the fan-out era so existing warm caches carry
-          # over. OS + Cargo.lock hash are included via Swatinem defaults.
-          key: ${{ inputs.label }}-${{ inputs.cache-key-suffix }}
-          cache-on-failure: true
 
       - name: Sync venv (frozen, no project install)
         run: uv sync --frozen --group dev --no-install-project --python 3.11
@@ -153,7 +126,7 @@ jobs:
         # The extra features mirror what running-process-py requests, so the
         # unified feature set matches nextest's full-workspace build and the
         # crates built here are reused instead of rebuilt.
-        run: cargo build --workspace --all-targets --exclude running-process-py --features client,running-process/async-process,running-process/originator-scan,running-process/probe,running-process/pty
+        run: soldr cargo build --workspace --all-targets --exclude running-process-py --features client,running-process/async-process,running-process/originator-scan,running-process/probe,running-process/pty
 
       # ci.lint and ci.test import `running_process` at runtime, so the
       # dev wheel must be installed in the venv. Cargo compile replays
@@ -223,7 +196,7 @@ jobs:
         env:
           RUNNING_PROCESS_TERMINAL_CAPABILITY_EXPORT_DIR: ${{ github.workspace }}/logs/terminal-capabilities/${{ inputs.label }}
         run: |
-          cargo test -p running-process --test pty --features client terminal_graphics_capabilities_test:: -- --nocapture
+          soldr cargo test -p running-process --test pty --features client terminal_graphics_capabilities_test:: -- --nocapture
 
       - name: Report terminal graphics capability matrix
         if: ${{ always() }}
@@ -238,7 +211,7 @@ jobs:
         env:
           RUNNING_PROCESS_BROKER_HELLO_PERF_GUARD: "1"
         run: |
-          cargo test -p running-process --test broker --features client real_socket_hello_roundtrip_perf_gate -- --nocapture
+          soldr cargo test -p running-process --test broker --features client real_socket_hello_roundtrip_perf_gate -- --nocapture
 
       - name: Integration Tests
         if: ${{ !cancelled() && steps.build.outcome == 'success' && inputs.integration-test }}
@@ -262,7 +235,7 @@ jobs:
       # this step with the same E0382 the release hit.
       - name: Build all binaries (daemon feature)
         if: ${{ inputs.integration-test }}
-        run: cargo build -p running-process --features daemon --bins
+        run: soldr cargo build -p running-process --features daemon --bins
 
       # ci.servicedef_proof refuses to run if the platform-default
       # service-definition directory already exists. The Integration
@@ -296,7 +269,7 @@ jobs:
         if: ${{ !cancelled() && steps.build.outcome == 'success' && inputs.rustdoc }}
         env:
           RUSTDOCFLAGS: "-Dwarnings"
-        run: cargo doc -p running-process --features daemon --no-deps
+        run: soldr cargo doc -p running-process --features daemon --no-deps
 
       - name: Display failure diagnostics
         if: ${{ failure() || cancelled() }}

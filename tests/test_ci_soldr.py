@@ -5,8 +5,8 @@ from ci import soldr
 
 def test_cargo_command_falls_back_to_raw_cargo_when_soldr_absent(monkeypatch) -> None:
     """When `soldr` is not on PATH, `cargo_command` returns the raw cargo argv.
-    This is the path CI runners take (they use dtolnay/rust-toolchain +
-    Swatinem/rust-cache instead of installing soldr)."""
+    This is the path a local checkout without soldr takes; CI runners get
+    soldr from zackees/setup-soldr and take the soldr branch."""
     monkeypatch.setattr("shutil.which", lambda _name: None)
     assert soldr.cargo_command("test", "--workspace") == [
         "cargo",

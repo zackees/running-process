@@ -30,14 +30,10 @@ permissions:
 env:
   CARGO_TERM_COLOR: always
   # Pinned so a soldr release cannot silently change how release artifacts
-  # are built (#561).
-  #
-  # 0.8.29 rather than the newest: 0.8.30 was published minutes before this
-  # ran and pip on the runner still enumerated 0.8.29 as the maximum, so the
-  # install failed. Both have identical file sets and requires-python; the
-  # difference was index propagation. Pinning a version the index has settled
-  # on avoids a release that fails for a reason unrelated to this repo.
-  SOLDR_VERSION: "0.8.29"
+  # are built (#561). Passed to zackees/setup-soldr as `version`; kept at the
+  # release setup-soldr@v0 is vendor-locked to, so the action and the soldr
+  # it drives were released together.
+  SOLDR_VERSION: "0.9.27"
 
 jobs:
   detect-bump:
@@ -534,30 +530,27 @@ jobs:
         with:
           ref: ${{ needs.preflight.outputs.checkout_ref }}
 
-      - uses: dtolnay/rust-toolchain@stable
+      # soldr (pinned via SOLDR_VERSION so a soldr release cannot silently
+      # change how release artifacts are built), the toolchain from
+      # rust-toolchain.toml, and soldr's zccache-backed build cache (CACHE-025,
+      # zackees/ci.yml#209). Restore-only: release targets are infrequent and
+      # their cross-build cache family crowds out per-commit test caches
+      # (#1216); the next release may compile these targets cold.
+      - name: Set up soldr (toolchain + build cache)
+        uses: zackees/setup-soldr@v0
         with:
-          toolchain: "1.95.0"
-          targets: ${{ matrix.target }}
+          cache: true
+          save-cache: "false"
+          cache-key-suffix: release-binaries-${{ matrix.target }}
+          prebuild-deps: none
+          version: ${{ env.SOLDR_VERSION }}
 
-      # Release targets are infrequent and their 1.6GB cross-build cache
-      # family crowds out per-commit test caches (#1216). Keep any existing
-      # main entry restorable, but do not save new release target caches; the
-      # next release may compile these targets cold.
-      - uses: Swatinem/rust-cache@v2
-        with:
-          save-if: false
-          key: release-binaries-${{ matrix.target }}
+      - name: Install ${{ matrix.target }} standard library
+        run: soldr rustup target add ${{ matrix.target }} --toolchain 1.95.0
 
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13"
-
-      # soldr resolves the rustup-managed toolchain rather than whatever shim
-      # happens to be first on PATH — the same reason the repo requires it
-      # locally. Pinned so a soldr release cannot silently change how release
-      # artifacts are built.
-      - name: Bootstrap soldr
-        run: pipx install "soldr==${{ env.SOLDR_VERSION }}"
 
       # #447: pull the sidecar manifest from build-sidecars and render its
       # per-arch SHAs into the daemon/runpm binaries we ship.
