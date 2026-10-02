@@ -59,13 +59,16 @@ fn scratch() -> tempfile::TempDir {
     tempfile::tempdir().expect("scratch directory")
 }
 
+/// macOS's `posix_spawn` already hands a header-less image to `/bin/sh`, so
+/// the fixture's prologue runs without any recovery; the recovery here only
+/// matters for a real APE image the shell route cannot finish.
 #[test]
-fn the_kernel_refuses_an_ape_image_without_help() {
+fn macos_runs_the_prologue_without_help() {
     let dir = scratch();
     let image = image(dir.path(), None);
-    let error = ape::retry_while_busy(|| std::process::Command::new(&image).output())
-        .expect_err("no binfmt registration for the fixture");
-    assert!(super::is_exec_format_error(&error), "{error:?}");
+    let output = ape::retry_while_busy(|| std::process::Command::new(&image).arg("z").output())
+        .expect("macOS runs a header-less image with the shell");
+    assert_eq!(output.stdout, b"ape-ok:z|");
 }
 
 #[test]
@@ -96,9 +99,12 @@ fn a_refused_native_image_keeps_its_error() {
     std::fs::write(&garbage, b"\x00\x01\x02\x03 not an image").unwrap();
     super::mark_executable(&garbage).unwrap();
     let mut command = std::process::Command::new(&garbage);
-    let error = ape::retry_while_busy(|| ape::spawn_std(&mut command, |command| command.spawn()))
-        .expect_err("not an APE image");
-    assert!(super::is_exec_format_error(&error), "{error:?}");
+    // Either the host refuses it, or its shell fallback runs and rejects it;
+    // it is never retried as an APE image.
+    match ape::retry_while_busy(|| ape::spawn_std(&mut command, |command| command.spawn())) {
+        Err(error) => assert!(super::is_exec_format_error(&error), "{error:?}"),
+        Ok(mut child) => assert!(!child.wait().expect("reap").success()),
+    }
 }
 
 #[cfg(feature = "async-process")]
