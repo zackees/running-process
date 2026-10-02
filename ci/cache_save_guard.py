@@ -6,8 +6,12 @@ same PR, yet it counts against the repository's 10 GB limit and evicts
 
 Rules, applied to every step in ``.github/workflows/*.yml``:
 
-* ``Swatinem/rust-cache`` must set ``save-if`` to ``false`` or to an
-  expression that names ``refs/heads/main`` (or excludes ``pull_request``).
+* ``Swatinem/rust-cache`` is banned outright (fleet rule CACHE-025,
+  zackees/ci.yml#209): Rust build caching goes through
+  ``zackees/setup-soldr``.
+* ``zackees/setup-soldr`` must leave ``save-cache`` unset (its ``auto``
+  default never saves on ``pull_request``), or set it to ``auto``,
+  ``false``, or an expression that names ``refs/heads/main``.
 * ``actions/cache`` (restore + save) is forbidden: use
   ``actions/cache/restore`` and a separate ``actions/cache/save``.
 * ``actions/cache/save`` must carry an ``if:`` gated the same way.
@@ -34,6 +38,12 @@ USES = re.compile(r"^(?P<indent>\s*)(?:-\s+)?uses:\s*['\"]?(?P<action>[^@'\"\s]+
 STEP_START = re.compile(r"^(?P<indent>\s*)-\s")
 MAIN_GATE = re.compile(
     r"refs/heads/main|event_name\s*!=\s*'pull_request'|^\s*['\"]?false['\"]?\s*$"
+)
+
+# setup-soldr's own ``auto`` mode skips saves on pull_request (setup-soldr#527).
+SOLDR_SAVE_GATE = re.compile(
+    r"refs/heads/main|event_name\s*!=\s*'pull_request'"
+    r"|^\s*['\"]?(?:false|auto)['\"]?\s*$"
 )
 
 
@@ -96,21 +106,35 @@ def check_text(path: Path, text: str) -> list[Violation]:
         if not match:
             continue
         action = match.group("action")
-        if action not in {"Swatinem/rust-cache", "actions/cache", "actions/cache/save"}:
+        if action not in {
+            "Swatinem/rust-cache",
+            "zackees/setup-soldr",
+            "actions/cache",
+            "actions/cache/save",
+        }:
             continue
         start, end = _step_bounds(lines, index)
         if _exempt(lines, start, end):
             continue
         step = lines[start:end]
         if action == "Swatinem/rust-cache":
-            gate = _field(step, "save-if")
-            if gate is None or not MAIN_GATE.search(gate):
+            violations.append(
+                Violation(
+                    path,
+                    index + 1,
+                    "Swatinem/rust-cache is banned (CACHE-025, zackees/ci.yml#209); "
+                    "use zackees/setup-soldr@v0 and `soldr cargo`",
+                )
+            )
+        elif action == "zackees/setup-soldr":
+            gate = _field(step, "save-cache")
+            if gate is not None and not SOLDR_SAVE_GATE.search(gate):
                 violations.append(
                     Violation(
                         path,
                         index + 1,
-                        "Swatinem/rust-cache saves on pull_request; add "
-                        "`save-if: ${{ github.ref == 'refs/heads/main' }}`",
+                        "zackees/setup-soldr save-cache can save on pull_request; "
+                        "leave it unset or gate it on refs/heads/main",
                     )
                 )
         elif action == "actions/cache":

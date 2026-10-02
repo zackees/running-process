@@ -35,32 +35,28 @@ def named_workflow_step(workflow: str, name: str) -> list[str]:
 
 
 class TestPreflightWorkflowContract(unittest.TestCase):
-    def test_rust_cache_only_tracks_created_target_roots(self) -> None:
-        """#1173: every listed target must exist before post-job cache cleanup."""
+    def test_rust_build_cache_is_setup_soldr(self) -> None:
+        """CACHE-025: the build cache is setup-soldr's, never Swatinem's."""
         workflow = WORKFLOW.read_text(encoding="utf-8")
-        rust_cache = named_workflow_step(workflow, "Rust build cache")
-        start = next(
-            index
-            for index, line in enumerate(rust_cache)
-            if re.match(r"^\s*workspaces:\s*\|\s*$", line)
+        self.assertNotIn("Swatinem/rust-cache", workflow)
+        setup = "\n".join(
+            named_workflow_step(workflow, "Set up soldr (toolchain + build cache)")
         )
-        indent = len(rust_cache[start + 1]) - len(rust_cache[start + 1].lstrip())
-        workspaces = []
-        for line in rust_cache[start + 1 :]:
-            if not line.strip() or len(line) - len(line.lstrip()) < indent:
-                break
-            workspaces.append(line.strip())
-
-        self.assertIn("uses: Swatinem/rust-cache@v2", "\n".join(rust_cache))
-        self.assertEqual(workspaces, [". -> target", "testbins-tokio -> target"])
-        # The nested fixture target is only built in some lanes; it must be
-        # created before rust-cache registers it.
-        mkdir = named_workflow_step(workflow, "Create tokio fixture target dir")
-        self.assertIn("run: mkdir -p testbins-tokio/target", "\n".join(mkdir))
-        self.assertLess(
-            workflow.index("- name: Create tokio fixture target dir"),
-            workflow.index("- name: Rust build cache"),
+        self.assertIn("uses: zackees/setup-soldr@v0", setup)
+        self.assertIn("cache: true", setup)
+        self.assertNotIn("cache: false", setup)
+        self.assertIn(
+            "save-cache: ${{ github.ref == 'refs/heads/main' && 'auto' || 'false' }}",
+            setup,
         )
+        # The workspace build has to go through soldr to reach the cache.
+        build = "\n".join(
+            named_workflow_step(
+                workflow,
+                "cargo build (workspace + all-targets, debug, --features client)",
+            )
+        )
+        self.assertIn("run: soldr cargo build --workspace", build)
 
 
 if __name__ == "__main__":

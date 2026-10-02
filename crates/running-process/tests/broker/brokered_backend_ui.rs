@@ -17,10 +17,14 @@
 
 #![cfg(feature = "client")]
 
-// Hosted rustc normalizes absolute input spans differently from the local
-// Windows toolchain. Unix uses the normalized rendering in both environments.
-// Keep a fixture for each rendering, while asserting that the compile-fail
-// source itself is identical.
+// rustc renders the input span two ways. Behind soldr's rustc wrapper
+// (every `soldr cargo` build, local or CI), zccache's worktree path remap
+// makes it print the workspace-relative `./crates/...:line:col` form on
+// every host, recorded under `ui/`. Without
+// the wrapper, trybuild normalizes the span to `tests/<dir>/...`, recorded
+// per host under `ui-unix/`, `ui-macos/`, and `ui-windows/`. Keep a fixture
+// for each rendering, while asserting that the compile-fail source itself is
+// identical.
 #[test]
 fn brokered_backend_compile_fail_ui_snapshots() {
     let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
@@ -37,7 +41,12 @@ fn brokered_backend_compile_fail_ui_snapshots() {
         );
     }
 
-    let platform_dir = if cfg!(target_os = "macos") {
+    // `soldr cargo` exports the wrapper it installed; trybuild's nested cargo
+    // inherits it, along with zccache's worktree path remap.
+    let soldr_wrapped = std::env::var_os("SOLDR_EFFECTIVE_RUSTC_WRAPPER").is_some();
+    let platform_dir = if soldr_wrapped {
+        "ui"
+    } else if cfg!(target_os = "macos") {
         "ui-macos"
     } else if cfg!(windows) && std::env::var_os("CI").is_some() {
         "ui-windows"

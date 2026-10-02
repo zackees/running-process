@@ -3,26 +3,28 @@
 `cargo_command` routes through `soldr cargo …` when the `soldr` binary
 is on PATH, and falls back to raw `cargo` otherwise. This keeps the
 project's stated toolchain policy (CLAUDE.md "soldr-prefixed build
-commands") honest from Python, matches the conditional already used in
-`install:248`, and degrades cleanly on CI runners that use
-`dtolnay/rust-toolchain` + `Swatinem/rust-cache` without soldr installed.
+commands") honest from Python and matches the conditional already used in
+`install:248`.
 
-Historical note: this module used to wrap `cargo` with `soldr cargo …`
-unconditionally. After zccache caused macOS-only build-script failures
-(PR #116), CI was switched to the standard rust-toolchain / rust-cache
-combo and `cargo_command` was reduced to a passthrough — which made
-local developer toolchain hygiene rely on whatever `cargo` was first on
-PATH. The conditional restored here gives soldr's hygiene back without
-breaking CI.
+CI runners get soldr from `zackees/setup-soldr@v0` (fleet rule CACHE-025,
+zackees/ci.yml#209), so on CI every stage takes the `soldr cargo` branch
+and its builds reach setup-soldr's zccache-backed build cache. The raw
+`cargo` fallback remains for local checkouts without soldr installed.
 """
 
 from __future__ import annotations
 
+import os
 import shutil
+
+# Set by `ci.test --coverage`. cargo-llvm-cov instruments the build through
+# its own `RUSTC_WRAPPER`; routing those builds through `soldr cargo` swaps in
+# soldr's wrapper, the instrumentation is lost, and no .profraw is written.
+DIRECT_CARGO_ENV = "RUNNING_PROCESS_DIRECT_CARGO"
 
 
 def cargo_command(*args: str) -> list[str]:
-    if shutil.which("soldr"):
+    if os.environ.get(DIRECT_CARGO_ENV) != "1" and shutil.which("soldr"):
         return ["soldr", "cargo", *args]
     return ["cargo", *args]
 

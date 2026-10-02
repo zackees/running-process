@@ -46,6 +46,9 @@ jobs:
     uses: ./.github/workflows/ci-preflight-rust.yml
     with:
       os: ubuntu-24.04-arm
+      # soldr's aarch64-musl compiler is an x86_64 host tool (soldr#3296):
+      # compile on x86_64, run the tests natively on ARM from an archive.
+      build-os: ubuntu-24.04
       label: linux-arm-musl
       target: aarch64-unknown-linux-musl
 
@@ -66,17 +69,15 @@ jobs:
 
       - uses: astral-sh/setup-uv@v5
 
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+      # Toolchain from rust-toolchain.toml plus soldr's zccache-backed build
+      # cache (CACHE-025, zackees/ci.yml#209). Saves are main-only (#1216).
+      - name: Set up soldr (toolchain + build cache)
+        uses: zackees/setup-soldr@v0
         with:
-          toolchain: "1.95.0"
-
-      - name: Rust build cache
-        uses: Swatinem/rust-cache@v2
-        with:
-          save-if: ${{ github.ref == 'refs/heads/main' }}
-          key: ubuntu-24.04-reproducible
-          cache-on-failure: true
+          cache: true
+          save-cache: ${{ github.ref == 'refs/heads/main' && 'auto' || 'false' }}
+          cache-key-suffix: ubuntu-24.04-reproducible
+          prebuild-deps: none
 
       - name: Double-build runpm and compare SHA256
         run: uv run --no-project --module ci.reproducible --verify

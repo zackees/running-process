@@ -15,7 +15,7 @@ import zipfile
 from pathlib import Path
 from typing import Literal
 
-from ci.soldr import cargo_command
+from ci.soldr import DIRECT_CARGO_ENV, cargo_command
 
 ROOT = Path(__file__).resolve().parent.parent
 DIST = ROOT / "dist"
@@ -24,12 +24,31 @@ TRAMPOLINE_ASSETS = ROOT / "src" / "running_process" / "assets"
 BuildMode = Literal["dev", "release"]
 
 
-def preserve_dev_pdb() -> Path:
+def maturin_target_dir(env: dict[str, str]) -> Path:
+    """Target tree maturin's Cargo builds the extension into.
+
+    soldr/zccache materializes cache hits as read-only artifacts in the tree
+    `soldr cargo` builds into (`target/`). Maturin runs Cargo itself, and where
+    that Cargo is not routed back through soldr (Windows runners resolve the
+    toolchain's cargo.exe directly) it fails to overwrite those read-only
+    outputs ("output file ... is not writeable"). Maturin therefore owns a
+    separate tree, like the standalone trampoline does.
+
+    The coverage pass is the exception: it runs Cargo directly under
+    cargo-llvm-cov, which reads the instrumented extension from the shared
+    `target/` tree when it merges the report.
+    """
+    if env.get(DIRECT_CARGO_ENV) == "1":
+        return ROOT / "target"
+    return ROOT / "target" / "maturin"
+
+
+def preserve_dev_pdb(target_dir: Path) -> Path:
     """Keep the exact dev-wheel PDB before later Cargo lanes can replace it."""
     from ci.env import host_target_triple
 
     triple = host_target_triple()
-    source = ROOT / "target" / triple / "debug" / "_native.pdb"
+    source = target_dir / triple / "debug" / "_native.pdb"
     if not source.is_file():
         raise RuntimeError(f"dev native PDB missing after wheel build: {source}")
     destination = ROOT / "target" / "probe-symbols" / triple / "_native.pdb"
@@ -224,6 +243,8 @@ def run_build(mode: BuildMode) -> int:
         env = apply_tiny_pdb_env(env)
         if platform.system() == "Windows":
             rustc_args = final_crate_rustc_args(ROOT)
+    target_dir = maturin_target_dir(env)
+    env = {**env, "CARGO_TARGET_DIR": str(target_dir)}
     DIST.mkdir(parents=True, exist_ok=True)
     before = {path.name for path in built_wheels()}
     cmd = build_command(mode, rustc_args=rustc_args)
@@ -245,7 +266,7 @@ def run_build(mode: BuildMode) -> int:
                 flush=True,
             )
     if mode == "dev" and platform.system() == "Windows":
-        preserved = preserve_dev_pdb()
+        preserved = preserve_dev_pdb(target_dir)
         print(
             f"preserved exact dev-wheel PDB for probe tests: {preserved}",
             file=sys.stderr,

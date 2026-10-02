@@ -149,8 +149,14 @@ fn security_fuzz_workflow_has_required_ci_controls() {
 
     let fuzz_run = workflow
         .lines()
-        .find(|line| line.contains("cargo +nightly fuzz run"))
-        .unwrap_or_else(|| panic!("workflow must run cargo +nightly fuzz run"));
+        .find(|line| line.contains("soldr cargo fuzz run"))
+        .unwrap_or_else(|| panic!("workflow must run soldr cargo fuzz run"));
+    // cargo-fuzz needs nightly; the repo's rust-toolchain.toml pins stable,
+    // so the run selects nightly explicitly.
+    assert!(
+        fuzz_run.contains("RUSTUP_TOOLCHAIN=nightly"),
+        "cargo-fuzz run must select the nightly toolchain: {fuzz_run}"
+    );
     assert!(
         fuzz_run.contains(r#"-max_total_time="${FUZZ_SECONDS}""#),
         "cargo-fuzz run must use -max_total_time from FUZZ_SECONDS: {fuzz_run}"

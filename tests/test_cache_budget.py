@@ -141,25 +141,27 @@ class CacheBudgetPolicyTests(unittest.TestCase):
         )
         arm_job = re.search(r"(?ms)^  arm:.*?(?=^  \w+:|\Z)", windows)
         self.assertIsNotNone(arm_job)
-        self.assertIn("cache-targets: false", arm_job.group())
         self.assertIn("cache-key-suffix: registry", arm_job.group())
 
         preflight = (root / ".github/workflows/ci-preflight.yml").read_text(
             encoding="utf-8"
         )
-        self.assertIn("cache-targets: ${{ inputs.cache-targets }}", preflight)
         self.assertIn(
-            "key: ${{ inputs.label }}-${{ inputs.cache-key-suffix }}", preflight
+            "cache-key-suffix: ${{ inputs.label }}-${{ inputs.cache-key-suffix }}",
+            preflight,
         )
 
         coverage = (root / ".github/workflows/coverage.yml").read_text(encoding="utf-8")
         coverage_cache = next(
             block
             for block in coverage.split("\n      - ")
-            if "key: ubuntu-24.04-coverage-registry" in block
+            if "uses: zackees/setup-soldr@v0" in block
         )
-        self.assertIn("cache-targets: false", coverage_cache)
-        self.assertIn("save-if: ${{ github.ref == 'refs/heads/main' }}", coverage_cache)
+        self.assertIn("cache-key-suffix: ubuntu-24.04-coverage", coverage_cache)
+        self.assertIn(
+            "save-cache: ${{ github.ref == 'refs/heads/main' && 'auto' || 'false' }}",
+            coverage_cache,
+        )
         self.assertTrue(
             {
                 "v0-rust-windows-arm-shared-preflight-",
@@ -183,13 +185,13 @@ class CacheBudgetPolicyTests(unittest.TestCase):
         release_cache_step = next(
             block
             for block in build_workflow.split("\n      - ")
-            if "uses: Swatinem/rust-cache@v2" in block
+            if "uses: zackees/setup-soldr@v0" in block
         )
         self.assertIn(
-            "save-if: ${{ github.ref == 'refs/heads/main' && inputs['build-mode'] != 'release' }}",
+            "save-cache: ${{ github.ref == 'refs/heads/main' && "
+            "inputs['build-mode'] != 'release' && 'auto' || 'false' }}",
             release_cache_step,
         )
-        self.assertNotIn("lookup-only: true", release_cache_step)
 
         release_workflow = (root / ".github/workflows/auto-release.yml").read_text(
             encoding="utf-8"
@@ -197,10 +199,9 @@ class CacheBudgetPolicyTests(unittest.TestCase):
         binary_cache_step = next(
             block
             for block in release_workflow.split("\n      - ")
-            if "key: release-binaries-${{ matrix.target }}" in block
+            if "cache-key-suffix: release-binaries-${{ matrix.target }}" in block
         )
-        self.assertIn("save-if: false", binary_cache_step)
-        self.assertNotIn("lookup-only: true", binary_cache_step)
+        self.assertIn('save-cache: "false"', binary_cache_step)
 
     def test_release_cache_tradeoff_is_documented(self) -> None:
         doc = (
@@ -271,15 +272,11 @@ class CacheBudgetPolicyTests(unittest.TestCase):
         cache_step_start = next(
             index
             for index, line in enumerate(lines)
-            if "uses: Swatinem/rust-cache@v2" in line
-            and any(
-                "name: Rust build cache" in prior
-                for prior in lines[max(0, index - 2) : index]
-            )
+            if "uses: zackees/setup-soldr@v0" in line
         )
-        step = "\n".join(lines[cache_step_start : cache_step_start + 10])
-        self.assertIn("save-if: false", step)
-        self.assertNotIn("cache-on-failure: true", step)
+        step = "\n".join(lines[cache_step_start : cache_step_start + 8])
+        self.assertIn('save-cache: "false"', step)
+        self.assertIn("cache-key-suffix: ${{ matrix.label }}-all-features", step)
 
     def test_enforcer_retires_only_the_disabled_main_families(self) -> None:
         stale = [
@@ -511,7 +508,7 @@ class CacheBudgetPolicyTests(unittest.TestCase):
             direct_writer = any(
                 marker in text
                 for marker in (
-                    "uses: Swatinem/rust-cache@",
+                    "uses: zackees/setup-soldr@",
                     "uses: actions/cache/save@",
                     "uses: actions/cache@",
                 )
@@ -533,7 +530,7 @@ class CacheBudgetPolicyTests(unittest.TestCase):
                 any(
                     marker in text
                     for marker in (
-                        "uses: Swatinem/rust-cache@",
+                        "uses: zackees/setup-soldr@",
                         "uses: actions/cache/save@",
                         "uses: actions/cache@",
                     )

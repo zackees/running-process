@@ -14,16 +14,20 @@ name: CI Preflight Rust-only (Reusable)
 # Cross-compile path:
 #   - apt installs `musl-tools` so `musl-gcc` is on PATH for the
 #     C-build-script crates (rusqlite/bundled, blake3 asm, etc.).
-#   - `dtolnay/rust-toolchain@stable` with `targets:` provisions the
-#     rust-std for the musl target alongside the host toolchain.
-#   - `cargo build/clippy/nextest --target <triple>` builds against
-#     the musl target.
+#   - `zackees/setup-soldr@v0` provisions the toolchain from
+#     rust-toolchain.toml and soldr's zccache-backed build cache
+#     (CACHE-025, zackees/ci.yml#209); `soldr rustup target add` adds
+#     the rust-std for the musl target.
+#   - `soldr cargo build/clippy/nextest --target <triple>` builds
+#     against the musl target. The platform-default linker is kept:
+#     musl links through musl-gcc, not setup-soldr's fast linker.
 #
-# Why NOT setup-soldr / soldr / zccache — see ci-preflight.yml header.
-# In short: running-process is upstream of soldr (which depends on
-# zccache, which depends on running-process's broker), so consuming
-# `setup-soldr@v0` in this CI introduces a circular tooling
-# dependency that has been blocking us via soldr#806 / #809.
+# Build host vs test host (`build-os`): soldr's catalogue musl compilers
+# are x86_64-hosted, and soldr refuses to prepare a musl target on an
+# ARM host (soldr#3296). A lane whose tests must execute natively on ARM
+# therefore builds on `build-os` (x86_64) and runs its tests on `os` from
+# a nextest archive (`unit-test-build` -> `unit-test-run`). Lanes that
+# leave `build-os` empty build and test on `os` in one `unit-test` job.
 
 on:
   workflow_call:
@@ -44,17 +48,31 @@ on:
         description: running-process feature set exercised by build, lint, and Rust unit/integration tests.
         type: string
         default: client
+      build-os:
+        description: Runner that compiles, when it differs from the test runner `os` (see header). Empty builds on `os`.
+        type: string
+        default: ""
 
 permissions:
   contents: read
 
 env:
   CARGO_TERM_COLOR: "always"
+  # Link musl binaries with a GNU build-id note. soldr links these targets
+  # through its managed clang + lld, which (unlike the distro gcc the lanes
+  # used before CACHE-025) emits no build-id unless asked. The probe only
+  # attributes frames to an ELF module whose mapped PT_NOTE build-id matches
+  # the file on disk, so without the note the probe's own tests cannot find
+  # their module (`loaded_elf_owner_carries_its_pt_note_build_id`,
+  # `known_blocked_stack_contains_marker_frame`). Same flag the docs already
+  # prescribe for local soldr links (docs/process-output-shutdown.md).
+  CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_RUSTFLAGS: "-C link-arg=-Wl,--build-id=sha1"
+  CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_RUSTFLAGS: "-C link-arg=-Wl,--build-id=sha1"
 
 jobs:
   warm:
     name: warm-build (${{ inputs.label }})
-    runs-on: ${{ inputs.os }}
+    runs-on: ${{ inputs.build-os || inputs.os }}
     timeout-minutes: 45
     env:
       RUST_BACKTRACE: "full"
@@ -64,31 +82,28 @@ jobs:
       - name: Install musl-tools
         run: bash ci/install_musl_tools.sh
 
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+      # Toolchain from rust-toolchain.toml plus soldr's zccache-backed build
+      # cache (CACHE-025, zackees/ci.yml#209). Saves are main-only (#1216).
+      # warm-build owns the save; lint and unit-test restore only.
+      - name: Set up soldr (toolchain + build cache)
+        uses: zackees/setup-soldr@v0
         with:
-          toolchain: "1.95.0"
-          components: clippy, rustfmt
-          targets: ${{ inputs.target }}
+          cache: true
+          save-cache: ${{ github.ref == 'refs/heads/main' && 'auto' || 'false' }}
+          cache-key-suffix: ${{ inputs.label }}-preflight-rust
+          prebuild-deps: none
+          linker: platform-default
 
-      - name: Rust build cache (shared across warm + sub-workers)
-        uses: Swatinem/rust-cache@v2
-        with:
-          # shared-key (not key): rust-cache otherwise mixes the job id into
-          # the cache key, so warm/lint/unit-test each got a private entry and
-          # the sub-workers never actually restored warm's target/ (#1216).
-          # Only warm saves, and only on main; PR runs restore main's entry.
-          save-if: ${{ github.ref == 'refs/heads/main' }}
-          shared-key: ${{ inputs.label }}-preflight-rust
-          cache-on-failure: true
+      - name: Install ${{ inputs.target }} standard library
+        run: soldr rustup target add ${{ inputs.target }} --toolchain 1.95.0
 
       - name: cargo build --target ${{ inputs.target }}
-        run: cargo build --workspace --exclude running-process-py --all-targets --features ${{ inputs.features }} --target ${{ inputs.target }}
+        run: soldr cargo build --workspace --exclude running-process-py --all-targets --features ${{ inputs.features }} --target ${{ inputs.target }}
 
   lint:
     name: lint (${{ inputs.label }})
     needs: warm
-    runs-on: ${{ inputs.os }}
+    runs-on: ${{ inputs.build-os || inputs.os }}
     timeout-minutes: 30
     env:
       RUST_BACKTRACE: "full"
@@ -96,25 +111,24 @@ jobs:
       - uses: actions/checkout@v4
       - name: Install musl-tools
         run: bash ci/install_musl_tools.sh
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+      # Restore-only: warm-build owns the save (#1216).
+      - name: Set up soldr (toolchain + build cache)
+        uses: zackees/setup-soldr@v0
         with:
-          toolchain: "1.95.0"
-          components: clippy, rustfmt
-          targets: ${{ inputs.target }}
-      - name: Rust build cache (restore warm)
-        uses: Swatinem/rust-cache@v2
-        with:
-          # Restore-only: warm-build owns this shared-key entry (#1216).
-          save-if: false
-          shared-key: ${{ inputs.label }}-preflight-rust
-          cache-on-failure: true
+          cache: true
+          save-cache: "false"
+          cache-key-suffix: ${{ inputs.label }}-preflight-rust
+          prebuild-deps: none
+          linker: platform-default
+      - name: Install ${{ inputs.target }} standard library
+        run: soldr rustup target add ${{ inputs.target }} --toolchain 1.95.0
       - name: cargo clippy --target ${{ inputs.target }}
-        run: cargo clippy --workspace --exclude running-process-py --all-targets --features ${{ inputs.features }} --target ${{ inputs.target }} -- -D warnings
+        run: soldr cargo clippy --workspace --exclude running-process-py --all-targets --features ${{ inputs.features }} --target ${{ inputs.target }} -- -D warnings
 
   unit-test:
     name: unit-test (${{ inputs.label }})
     needs: warm
+    if: ${{ inputs.build-os == '' || inputs.build-os == inputs.os }}
     runs-on: ${{ inputs.os }}
     timeout-minutes: 45
     env:
@@ -123,23 +137,21 @@ jobs:
       - uses: actions/checkout@v4
       - name: Install musl-tools
         run: bash ci/install_musl_tools.sh
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+      # Restore-only: warm-build owns the save (#1216).
+      - name: Set up soldr (toolchain + build cache)
+        uses: zackees/setup-soldr@v0
         with:
-          toolchain: "1.95.0"
-          components: clippy, rustfmt
-          targets: ${{ inputs.target }}
+          cache: true
+          save-cache: "false"
+          cache-key-suffix: ${{ inputs.label }}-preflight-rust
+          prebuild-deps: none
+          linker: platform-default
+      - name: Install ${{ inputs.target }} standard library
+        run: soldr rustup target add ${{ inputs.target }} --toolchain 1.95.0
       - name: Install cargo-nextest
         uses: taiki-e/install-action@v2
         with:
           tool: nextest
-      - name: Rust build cache (restore warm)
-        uses: Swatinem/rust-cache@v2
-        with:
-          # Restore-only: warm-build owns this shared-key entry (#1216).
-          save-if: false
-          shared-key: ${{ inputs.label }}-preflight-rust
-          cache-on-failure: true
       # musl binaries are statically linked and run on the host-arch
       # glibc runner without QEMU. If a downstream lane introduces a
       # non-host musl triple (e.g. aarch64-musl on x86 runner), this
@@ -151,7 +163,7 @@ jobs:
       # `ci.test`, so it needs its own build — with the same `--target`,
       # or the binaries land in the host tree and the tests miss them.
       - name: Build test fixtures
-        run: cargo build -p testbins --target ${{ inputs.target }}
+        run: soldr cargo build -p testbins --target ${{ inputs.target }}
       # NOT built here: `testbins-tokio`, the console-subscriber fixture
       # (#788). It needs `--cfg tokio_unstable`, which forces a full tokio
       # rebuild, and it would have to be cross-compiled for this lane's
@@ -161,4 +173,74 @@ jobs:
       # through `ci.test`, which does build it — so the subscription is
       # exercised on every host platform, just not on the musl cross targets.
       - name: Rust unit and integration tests (${{ inputs.features }})
-        run: cargo nextest run --workspace --exclude running-process-py --features ${{ inputs.features }} --target ${{ inputs.target }}
+        run: soldr cargo nextest run --workspace --exclude running-process-py --features ${{ inputs.features }} --target ${{ inputs.target }}
+
+  # Cross-built lane, step 1: compile the tests and fixtures on `build-os`
+  # into a nextest archive. The `aarch64-musl-archive` profile in
+  # .config/nextest.toml adds the testbins fixtures, which the tests look up
+  # beside their own `deps/` directory.
+  unit-test-build:
+    name: unit-test-build (${{ inputs.label }})
+    needs: warm
+    if: ${{ inputs.build-os != '' && inputs.build-os != inputs.os }}
+    runs-on: ${{ inputs.build-os }}
+    timeout-minutes: 45
+    env:
+      RUST_BACKTRACE: "full"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install musl-tools
+        run: bash ci/install_musl_tools.sh
+      # Restore-only: warm-build owns the save (#1216).
+      - name: Set up soldr (toolchain + build cache)
+        uses: zackees/setup-soldr@v0
+        with:
+          cache: true
+          save-cache: "false"
+          cache-key-suffix: ${{ inputs.label }}-preflight-rust
+          prebuild-deps: none
+          linker: platform-default
+      - name: Install ${{ inputs.target }} standard library
+        run: soldr rustup target add ${{ inputs.target }} --toolchain 1.95.0
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@v2
+        with:
+          tool: nextest
+      - name: Build test fixtures
+        run: soldr cargo build -p testbins --target ${{ inputs.target }}
+      - name: Archive Rust unit and integration tests (${{ inputs.features }})
+        run: soldr cargo nextest archive --workspace --exclude running-process-py --features ${{ inputs.features }} --target ${{ inputs.target }} --profile aarch64-musl-archive --archive-file "${{ runner.temp }}/nextest-${{ inputs.label }}.tar.zst"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nextest-archive-${{ inputs.label }}
+          path: ${{ runner.temp }}/nextest-${{ inputs.label }}.tar.zst
+          if-no-files-found: error
+          retention-days: 3
+
+  # Cross-built lane, step 2: run the archived tests natively on `os`.
+  # Nothing compiles here, so the job needs neither soldr nor cargo.
+  unit-test-run:
+    name: unit-test (${{ inputs.label }})
+    needs: unit-test-build
+    runs-on: ${{ inputs.os }}
+    timeout-minutes: 45
+    env:
+      RUST_BACKTRACE: "full"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@v2
+        with:
+          tool: nextest
+      - uses: actions/download-artifact@v4
+        with:
+          name: nextest-archive-${{ inputs.label }}
+          path: ${{ runner.temp }}/nextest-archive
+      # `--extract-to` the workspace puts the archived target tree back at
+      # `${{ github.workspace }}/target`, the path it was built at (both
+      # runners check out to the same path). Tests that spawn a workspace
+      # binary through `env!("CARGO_BIN_EXE_<name>")` carry that absolute
+      # build-time path, so extracting anywhere else (nextest's default temp
+      # directory) leaves them spawning a file that does not exist.
+      - name: Rust unit and integration tests (${{ inputs.features }})
+        run: cargo-nextest nextest run --archive-file "${{ runner.temp }}/nextest-archive/nextest-${{ inputs.label }}.tar.zst" --extract-to "${{ github.workspace }}" --extract-overwrite --workspace-remap "${{ github.workspace }}" --profile aarch64-musl-archive

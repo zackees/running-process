@@ -5,8 +5,8 @@ from ci import soldr
 
 def test_cargo_command_falls_back_to_raw_cargo_when_soldr_absent(monkeypatch) -> None:
     """When `soldr` is not on PATH, `cargo_command` returns the raw cargo argv.
-    This is the path CI runners take (they use dtolnay/rust-toolchain +
-    Swatinem/rust-cache instead of installing soldr)."""
+    This is the path a local checkout without soldr takes; CI runners get
+    soldr from zackees/setup-soldr and take the soldr branch."""
     monkeypatch.setattr("shutil.which", lambda _name: None)
     assert soldr.cargo_command("test", "--workspace") == [
         "cargo",
@@ -23,6 +23,8 @@ def test_cargo_command_routes_through_soldr_when_available(monkeypatch) -> None:
         "shutil.which",
         lambda name: "/usr/local/bin/soldr" if name == "soldr" else None,
     )
+    # The coverage lane exports the opt-out to this very test process.
+    monkeypatch.delenv(soldr.DIRECT_CARGO_ENV, raising=False)
     assert soldr.cargo_command("test", "--workspace") == [
         "soldr",
         "cargo",
@@ -49,4 +51,19 @@ def test_maturin_command_uses_python_module() -> None:
         "maturin",
         "build",
         "--release",
+    ]
+
+
+def test_cargo_command_runs_cargo_directly_when_opted_out(monkeypatch) -> None:
+    """Coverage opts out: cargo-llvm-cov must own RUSTC_WRAPPER, so its builds
+    cannot go through `soldr cargo` even with soldr installed."""
+    monkeypatch.setattr(
+        "shutil.which",
+        lambda name: "/usr/local/bin/soldr" if name == "soldr" else None,
+    )
+    monkeypatch.setenv(soldr.DIRECT_CARGO_ENV, "1")
+    assert soldr.cargo_command("llvm-cov", "show-env") == [
+        "cargo",
+        "llvm-cov",
+        "show-env",
     ]

@@ -84,21 +84,23 @@ jobs:
           restore-keys: |
             venv-${{ inputs.runs-on }}-py3.11-
 
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+      # Toolchain from rust-toolchain.toml plus soldr's zccache-backed build
+      # cache (CACHE-025, zackees/ci.yml#209). #1216: preserve shared
+      # dev-build saves on main, but keep the infrequent release build
+      # restore-only. Release builds still run fully; the next release may
+      # compile cold.
+      - name: Set up soldr (toolchain + build cache)
+        uses: zackees/setup-soldr@v0
         with:
-          toolchain: "1.95.0"
-          components: clippy, rustfmt
-
-      - name: Rust build cache
-        uses: Swatinem/rust-cache@v2
-        with:
-          # #1216: preserve shared dev-build saves, but keep the infrequent
-          # release-only target cache restore-only. Release builds still run
-          # fully; the next release may compile its target cache cold.
-          save-if: ${{ github.ref == 'refs/heads/main' && inputs['build-mode'] != 'release' }}
-          key: ${{ inputs.runs-on }}-${{ inputs.build-mode || 'dev' }}
-          cache-on-failure: true
+          cache: true
+          save-cache: ${{ github.ref == 'refs/heads/main' && inputs['build-mode'] != 'release' && 'auto' || 'false' }}
+          cache-key-suffix: ${{ inputs.runs-on }}-${{ inputs.build-mode || 'dev' }}
+          prebuild-deps: none
+          # Inside a manylinux container (glibc 2.28) soldr's managed clang,
+          # which it otherwise drives the link through, needs glibc >= 2.34 and
+          # every build script fails to link. `ld` makes soldr link with the
+          # container's own toolchain; elsewhere take setup-soldr's default.
+          linker: ${{ inputs.container != '' && 'ld' || '' }}
 
       - name: Sync
         run: uv sync --frozen --group dev --no-install-project --python 3.11 -v
@@ -136,15 +138,16 @@ jobs:
         run: uv run --no-sync --module ci.run_logged logs/build-wheel.log -- uv run --no-sync --module ci.build_wheel --${{ inputs.build-mode || 'dev' }}
 
       # Backend smoke: exercise the soldr PEP 517 backend end-to-end in an
-      # isolated build env with soldr resolved from PyPI. The release wheel
-      # immediately above already exercises the cached Rust build. Disable the
-      # cache here because an isolated soldr installation has a distinct daemon
-      # binary identity and therefore cannot reuse the outer build's registered
-      # broker service definition (zackees/soldr#1300).
+      # isolated build env with soldr resolved from PyPI. That soldr is a
+      # different version/image from setup-soldr's, and only one daemon may
+      # own a soldr root, so it cannot start a daemon on setup-soldr's root
+      # ("soldr root ownership is busy"). Give it its own root, as soldr's
+      # diagnostic prescribes, rather than a ZCCACHE_DISABLE kill switch:
+      # the build cache stays on (CACHE-025 / CACHE-010).
       - name: soldr PEP 517 backend smoke
         if: ${{ runner.os == 'Linux' }}
         env:
-          ZCCACHE_DISABLE: "1"
+          SOLDR_CACHE_DIR: ${{ runner.temp }}/soldr-backend-smoke
         run: uv build --wheel --out-dir dist-backend-smoke
 
       - name: Build sdist
@@ -162,8 +165,8 @@ jobs:
       - name: Package Rust crates
         if: ${{ inputs.include-crates }}
         run: |
-          cargo package -p running-process --no-verify
-          cargo package -p running-process-py --no-verify || echo "::warning::running-process-py packaging skipped (running-process not yet on crates.io)"
+          soldr cargo package -p running-process --no-verify
+          soldr cargo package -p running-process-py --no-verify || echo "::warning::running-process-py packaging skipped (running-process not yet on crates.io)"
 
       - name: Upload crate artifacts
         if: ${{ inputs.include-crates }}
