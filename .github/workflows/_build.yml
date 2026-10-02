@@ -96,10 +96,11 @@ jobs:
           save-cache: ${{ github.ref == 'refs/heads/main' && inputs['build-mode'] != 'release' && 'auto' || 'false' }}
           cache-key-suffix: ${{ inputs.runs-on }}-${{ inputs.build-mode || 'dev' }}
           prebuild-deps: none
-          # Inside a manylinux container the toolset gcc cannot drive
-          # setup-soldr's fast linker (build scripts fail to link), so keep the
-          # platform linker there; elsewhere take setup-soldr's default.
-          linker: ${{ inputs.container != '' && 'platform-default' || '' }}
+          # Inside a manylinux container (glibc 2.28) soldr's managed clang,
+          # which it otherwise drives the link through, needs glibc >= 2.34 and
+          # every build script fails to link. `ld` makes soldr link with the
+          # container's own toolchain; elsewhere take setup-soldr's default.
+          linker: ${{ inputs.container != '' && 'ld' || '' }}
 
       - name: Sync
         run: uv sync --frozen --group dev --no-install-project --python 3.11 -v
