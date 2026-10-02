@@ -30,7 +30,7 @@ fn security_audit_workflow_covers_dependency_review_surface() {
 #[test]
 fn security_audit_workflow_denies_audit_warnings() {
     assert!(
-        SECURITY_AUDIT_WORKFLOW.contains("run: cargo audit --deny warnings"),
+        SECURITY_AUDIT_WORKFLOW.contains("run: soldr cargo audit --deny warnings"),
         "security audit workflow must fail on cargo audit warnings"
     );
 }
