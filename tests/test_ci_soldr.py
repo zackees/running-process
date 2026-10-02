@@ -50,3 +50,18 @@ def test_maturin_command_uses_python_module() -> None:
         "build",
         "--release",
     ]
+
+
+def test_cargo_command_runs_cargo_directly_when_opted_out(monkeypatch) -> None:
+    """Coverage opts out: cargo-llvm-cov must own RUSTC_WRAPPER, so its builds
+    cannot go through `soldr cargo` even with soldr installed."""
+    monkeypatch.setattr(
+        "shutil.which",
+        lambda name: "/usr/local/bin/soldr" if name == "soldr" else None,
+    )
+    monkeypatch.setenv(soldr.DIRECT_CARGO_ENV, "1")
+    assert soldr.cargo_command("llvm-cov", "show-env") == [
+        "cargo",
+        "llvm-cov",
+        "show-env",
+    ]

@@ -14,11 +14,17 @@ and its builds reach setup-soldr's zccache-backed build cache. The raw
 
 from __future__ import annotations
 
+import os
 import shutil
+
+# Set by `ci.test --coverage`. cargo-llvm-cov instruments the build through
+# its own `RUSTC_WRAPPER`; routing those builds through `soldr cargo` swaps in
+# soldr's wrapper, the instrumentation is lost, and no .profraw is written.
+DIRECT_CARGO_ENV = "RUNNING_PROCESS_DIRECT_CARGO"
 
 
 def cargo_command(*args: str) -> list[str]:
-    if shutil.which("soldr"):
+    if os.environ.get(DIRECT_CARGO_ENV) != "1" and shutil.which("soldr"):
         return ["soldr", "cargo", *args]
     return ["cargo", *args]
 

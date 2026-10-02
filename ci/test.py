@@ -12,7 +12,7 @@ from collections.abc import Sequence
 from pathlib import Path
 
 from ci.dev_build import ensure_dev_wheel
-from ci.soldr import cargo_command
+from ci.soldr import DIRECT_CARGO_ENV, cargo_command
 
 ROOT = Path(__file__).resolve().parent.parent
 IN_RUNNING_PROCESS_ENV = "IN_RUNNING_PROCESS"
@@ -704,6 +704,9 @@ def main(argv: list[str] | None = None) -> int:
     python = Path(sys.executable)
     coverage_env: dict[str, str] = {}
     if coverage:
+        # cargo-llvm-cov owns RUSTC_WRAPPER for the whole coverage pass, so
+        # every cargo invocation here runs cargo directly (ci/soldr.py).
+        os.environ[DIRECT_CARGO_ENV] = "1"
         unusable = llvm_profdata_preflight()
         if unusable is not None:
             print(unusable, file=sys.stderr, flush=True)
