@@ -23,6 +23,8 @@ def test_cargo_command_routes_through_soldr_when_available(monkeypatch) -> None:
         "shutil.which",
         lambda name: "/usr/local/bin/soldr" if name == "soldr" else None,
     )
+    # The coverage lane exports the opt-out to this very test process.
+    monkeypatch.delenv(soldr.DIRECT_CARGO_ENV, raising=False)
     assert soldr.cargo_command("test", "--workspace") == [
         "soldr",
         "cargo",
