@@ -97,12 +97,16 @@ retries = 0
 # archive must carry them explicitly. Depth 1 takes the files directly in
 # `debug/` and skips its subdirectories.
 #
-# The run host has neither cargo nor a registry, so the trybuild UI test
-# (which compiles its fixtures with a nested cargo at test time) cannot run
-# there. It checks rustc diagnostics, not target behaviour, and runs on every
-# lane that builds where it tests, including arm-gnu and x86-musl.
+# Tests that drive cargo at run time cannot run on the ARM run host: they
+# spawn `env!("CARGO")`, the build host's x86_64 cargo, and need its
+# registry. They check the workspace and rustc diagnostics, not target
+# behaviour, and run on every lane that builds where it tests (arm-gnu,
+# x86-musl, ...):
+#   - brokered_backend_ui: trybuild compiles its fixtures with nested cargo
+#   - probe_facade_surface::probe_schema_dependency_resolves_with_no_features:
+#     runs `cargo tree`
 [profile.aarch64-musl-archive]
-default-filter = "not test(/^brokered_backend_ui::/)"
+default-filter = "not (test(/^brokered_backend_ui::/) | test(=probe_facade_surface::probe_schema_dependency_resolves_with_no_features))"
 archive.include = [
     { path = "aarch64-unknown-linux-musl/debug", relative-to = "target", depth = 1, on-missing = "error" },
 ]
