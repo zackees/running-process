@@ -509,7 +509,15 @@ mod tests {
         while waits.load(Ordering::SeqCst) == 0 && Instant::now() < deadline {
             thread::yield_now();
         }
-        assert_eq!(waits.load(Ordering::SeqCst), 1, "fake wait never started");
+        // `waits` counts every try_wait poll as well as the final blocking
+        // wait: shutdown polls every 10ms until its 50ms deadline, then hands
+        // the child to a background reaper. A test thread descheduled for a
+        // poll interval or two observes more than one call, so the property
+        // is "reaping has started", not "exactly one call so far".
+        assert!(
+            waits.load(Ordering::SeqCst) >= 1,
+            "fake wait never started"
+        );
 
         let child_mutex_available = child.try_lock().is_ok();
         release_wait(&wait_gate);

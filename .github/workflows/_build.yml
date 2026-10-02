@@ -138,15 +138,12 @@ jobs:
         run: uv run --no-sync --module ci.run_logged logs/build-wheel.log -- uv run --no-sync --module ci.build_wheel --${{ inputs.build-mode || 'dev' }}
 
       # Backend smoke: exercise the soldr PEP 517 backend end-to-end in an
-      # isolated build env with soldr resolved from PyPI. The release wheel
-      # immediately above already exercises the cached Rust build. Disable the
-      # cache here because an isolated soldr installation has a distinct daemon
-      # binary identity and therefore cannot reuse the outer build's registered
-      # broker service definition (zackees/soldr#1300).
+      # isolated build env with soldr resolved from PyPI. It runs with the
+      # build cache on, like every other soldr build here: CACHE-025 /
+      # CACHE-010 forbid a ZCCACHE_DISABLE kill switch, and the daemon
+      # identity clash that once motivated one (zackees/soldr#1300) is closed.
       - name: soldr PEP 517 backend smoke
         if: ${{ runner.os == 'Linux' }}
-        env:
-          ZCCACHE_DISABLE: "1"
         run: uv build --wheel --out-dir dist-backend-smoke
 
       - name: Build sdist

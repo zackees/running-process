@@ -81,16 +81,35 @@ class PreserveDevPdbTest(unittest.TestCase):
         triple = "x86_64-pc-windows-msvc"
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            source = root / "target" / triple / "debug" / "_native.pdb"
+            target_dir = root / "target" / "maturin"
+            source = target_dir / triple / "debug" / "_native.pdb"
             source.parent.mkdir(parents=True)
             source.write_bytes(b"exact-codeview-identity")
             with (
                 patch.object(build_wheel, "ROOT", root),
                 patch("ci.env.host_target_triple", return_value=triple),
             ):
-                preserved = build_wheel.preserve_dev_pdb()
+                preserved = build_wheel.preserve_dev_pdb(target_dir)
 
             self.assertEqual(
                 preserved, root / "target" / "probe-symbols" / triple / "_native.pdb"
             )
             self.assertEqual(preserved.read_bytes(), source.read_bytes())
+
+
+class MaturinTargetDirTest(unittest.TestCase):
+    def test_maturin_does_not_share_soldrs_target_tree(self) -> None:
+        # soldr's cache hits are read-only; a Cargo maturin runs outside soldr
+        # cannot overwrite them, so maturin builds into its own tree.
+        with patch.object(build_wheel, "ROOT", Path("/repo")):
+            self.assertEqual(
+                build_wheel.maturin_target_dir({"CARGO_TARGET_DIR": "/repo/target"}),
+                Path("/repo/target/maturin"),
+            )
+
+    def test_coverage_keeps_the_shared_tree_cargo_llvm_cov_reads(self) -> None:
+        with patch.object(build_wheel, "ROOT", Path("/repo")):
+            self.assertEqual(
+                build_wheel.maturin_target_dir({build_wheel.DIRECT_CARGO_ENV: "1"}),
+                Path("/repo/target"),
+            )
