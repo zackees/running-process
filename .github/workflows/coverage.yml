@@ -57,6 +57,11 @@ jobs:
           save-cache: ${{ github.ref == 'refs/heads/main' && 'auto' || 'false' }}
           cache-key-suffix: ubuntu-24.04-coverage
           prebuild-deps: none
+          # maturin runs `cargo` itself. The shims route it through soldr too,
+          # so the wheel build shares the zccache-materialized (read-only)
+          # artifacts the `soldr cargo` steps leave in target/ instead of
+          # failing to overwrite them, and is cached like every other build.
+          shims: "true"
 
       - name: Install llvm-tools-preview
         run: soldr rustup component add llvm-tools-preview --toolchain 1.95.0

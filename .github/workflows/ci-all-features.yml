@@ -71,6 +71,11 @@ jobs:
           save-cache: "false"
           cache-key-suffix: ${{ matrix.label }}-all-features
           prebuild-deps: none
+          # maturin runs `cargo` itself. The shims route it through soldr too,
+          # so the wheel build shares the zccache-materialized (read-only)
+          # artifacts the `soldr cargo` steps leave in target/ instead of
+          # failing to overwrite them, and is cached like every other build.
+          shims: "true"
 
       - name: Install cargo-nextest
         uses: taiki-e/install-action@v2
