@@ -17,6 +17,13 @@ RUST_SOURCE_ROOTS = (ROOT / "crates", ROOT / "testbins")
 # crate. Daemon/client/trampoline code that used to live in sibling
 # crates now lives at `crates/running-process/src/{daemon,client,bin}/`.
 ALLOWED_RUST_COMMAND_NEW = {
+    # APE launch recovery: these cfg(test) files start fixture images that the
+    # kernel refuses (ENOEXEC), to prove the retry runs them through a loader
+    # and leaves every other spawn error alone. Production spawns go through
+    # the existing sanitized layers; nothing here is reachable outside tests.
+    Path("crates/running-process-platform-internal/src/platform/ape_tests.rs"),
+    Path("crates/running-process-platform-internal/src/platform_linux/ape_tests.rs"),
+    Path("crates/running-process-platform-internal/src/platform_macos/ape_tests.rs"),
     # Caller-owned foreground execution intentionally preserves an unmodified
     # std::process::Command. Its fixtures construct fixed commands only to
     # prove that this explicit escape hatch adds no containment policy.
@@ -195,6 +202,13 @@ ALLOWED_RUST_COMMAND_NEW = {
 }
 
 ALLOWED_RUST_SPAWN = {
+    # APE launch recovery: these cfg(test) files start fixture images that the
+    # kernel refuses (ENOEXEC), to prove the retry runs them through a loader
+    # and leaves every other spawn error alone. Production spawns go through
+    # the existing sanitized layers; nothing here is reachable outside tests.
+    Path("crates/running-process-platform-internal/src/platform/ape_tests.rs"),
+    Path("crates/running-process-platform-internal/src/platform_linux/ape_tests.rs"),
+    Path("crates/running-process-platform-internal/src/platform_macos/ape_tests.rs"),
     # Caller-owned foreground execution is the explicit native-command escape
     # hatch. The only raw spawn transfers the caller's existing Command as-is;
     # it does not introduce a second command-construction or containment path.

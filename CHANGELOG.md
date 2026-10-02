@@ -1,5 +1,25 @@
 # Changelog
 
+## 4.10.16 — Actually Portable Executable launch recovery
+
+- Runs Cosmopolitan Actually Portable Executables (APE) on hosts with no
+  `binfmt_misc` entry for them, such as stock NixOS. The kernel refuses such an
+  image with `ENOEXEC` and only a shell knew to retry, so the same program
+  that ran from a terminal failed with "Exec format error" from every spawn
+  path here. Recovery runs only after the host has refused the image, so
+  native executables pay nothing.
+- A `SpawnSpec` (and so `AsyncProcess`) runs the image through a loader
+  directly: an installed `ape`, else the loader embedded in the image (new
+  default `ape-loader` feature, extracted to the prologue's own
+  `${TMPDIR:-$HOME}/.ape-<version>` cache and reused only when byte-identical),
+  else `/bin/sh`. This works under a cleared environment.
+- Caller-built commands (`NativeProcess`, bounded runs, `spawn_sync`,
+  `spawn_tokio`) keep every caller setting and are retried once through
+  `execvp`, whose POSIX `ENOEXEC` rule runs the image's prologue, after the
+  embedded loader has been placed where that prologue looks for it.
+- `running_process::ape` exposes detection, loader planning, and the retry
+  for callers that launch processes some other way.
+
 ## 4.10.15 — ConPTY sidecar console-host tracking
 
 - Tracks `OpenConsole.exe` alongside `conhost.exe` when assigning ConPTY hosts

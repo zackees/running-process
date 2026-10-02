@@ -2105,6 +2105,7 @@ dependencies = [
  "getrandom 0.4.2",
  "interprocess",
  "libc",
+ "miniz_oxide",
  "png",
  "portable-pty",
  "prost",

@@ -493,7 +493,10 @@ pub fn spawn_tokio(
         options.kill_when_owner_dies,
     )?;
 
-    let child = command.spawn()?;
+    let child =
+        running_process_platform_internal::platform::ape::spawn_tokio(command, |command| {
+            command.spawn()
+        })?;
 
     // A containment failure is reported, not swallowed. `kill_when_owner_dies`
     // is asked for by callers that must not leak children -- zccache's compile

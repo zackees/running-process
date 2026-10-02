@@ -41,10 +41,13 @@ crate::declare_env_vars! {
         "X11 display; its presence is what makes a Linux window icon possible.";
     HOME => "HOME",
         EnvKind::Path, Owner::Foreign, "autostart paths cannot be resolved",
-        "Home directory; roots the Linux and macOS autostart entries.";
+        "Home directory; roots the autostart entries and the fallback APE loader cache.";
     LOCALAPPDATA => "LOCALAPPDATA",
         EnvKind::Path, Owner::Foreign, "the platform default is derived",
         "Windows per-user application data root.";
+    PATH => "PATH",
+        EnvKind::Text, Owner::Foreign, "the child inherits no explicit PATH",
+        "Executable search path, forwarded to the symbolization worker and searched for an APE loader.";
     CONPTY_CACHE => "RUNNING_PROCESS_CONPTY_CACHE",
         EnvKind::Path, Owner::Crate, "the platform cache directory",
         "Root under which the ConPTY sidecar is cached on Windows.";
@@ -68,7 +71,7 @@ crate::declare_env_vars! {
         "Use the system ConPTY instead of the bundled sidecar on Windows.";
     TMPDIR => "TMPDIR",
         EnvKind::Path, Owner::Foreign, "the platform temporary directory",
-        "macOS per-session temporary directory; a broker endpoint root.";
+        "Temporary directory: a macOS broker endpoint root and the APE loader cache.";
     WAYLAND_DISPLAY => "WAYLAND_DISPLAY",
         EnvKind::Text, Owner::Foreign, "not a Wayland session",
         "Wayland session marker; window icons are unsupported under Wayland.";

@@ -27,6 +27,7 @@ pub use running_process_platform_internal::foreground;
 pub(crate) use running_process_platform_internal::platform;
 
 mod actor_runtime;
+pub mod ape;
 #[cfg(feature = "async-process")]
 mod async_process;
 #[cfg(feature = "async-process")]
@@ -649,7 +650,11 @@ impl NativeProcess {
             }
         } else {
             ChildState::from_std(
-                command.spawn().map_err(ProcessError::Spawn)?,
+                running_process_platform_internal::platform::ape::spawn_std(
+                    &mut command,
+                    |command| command.spawn(),
+                )
+                .map_err(ProcessError::Spawn)?,
                 self.config.create_process_group,
             )
         };
