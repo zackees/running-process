@@ -46,6 +46,9 @@ jobs:
     uses: ./.github/workflows/ci-preflight-rust.yml
     with:
       os: ubuntu-24.04-arm
+      # soldr's aarch64-musl compiler is an x86_64 host tool (soldr#3296):
+      # compile on x86_64, run the tests natively on ARM from an archive.
+      build-os: ubuntu-24.04
       label: linux-arm-musl
       target: aarch64-unknown-linux-musl
 

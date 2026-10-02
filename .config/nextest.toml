@@ -89,3 +89,14 @@ test-group = 'pty-mitm-substrate'
 filter = 'binary(pty) and test(/^daemon_cross_process_pty_attach_test::/)'
 slow-timeout = { period = "10s", terminate-after = 1, grace-period = "1s" }
 retries = 0
+
+# Cross-built aarch64-musl lane (ci-preflight-rust.yml with `build-os`):
+# the tests are compiled on x86_64 and run on ARM from a nextest archive.
+# The testbins fixtures sit beside the test binaries' `deps/` directory,
+# where `testbin_path` looks for them, and are not test binaries, so the
+# archive must carry them explicitly. Depth 1 takes the files directly in
+# `debug/` and skips its subdirectories.
+[profile.aarch64-musl-archive]
+archive.include = [
+    { path = "aarch64-unknown-linux-musl/debug", relative-to = "target", depth = 1, on-missing = "error" },
+]

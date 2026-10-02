@@ -9,6 +9,28 @@ from pathlib import Path
 
 from ci.soldr import cargo_command
 
+LAUNCHER = "running-process-launcher.exe"
+
+
+def launcher_path(target_dir: Path = Path("target")) -> Path:
+    """Return the newest built launcher in the host or an explicit-triple tree.
+
+    Plain cargo writes ``target/debug/``; ``soldr cargo`` pins the host triple
+    and writes ``target/<triple>/debug/``. The test asserts the file exists,
+    so an unbuilt launcher still fails loudly at the default path.
+    """
+    candidates = [
+        path
+        for path in (
+            target_dir / "debug" / LAUNCHER,
+            *target_dir.glob(f"*/debug/{LAUNCHER}"),
+        )
+        if path.is_file()
+    ]
+    if not candidates:
+        return (target_dir / "debug" / LAUNCHER).resolve()
+    return max(candidates, key=lambda path: path.stat().st_mtime).resolve()
+
 
 def main() -> int:
     if sys.platform != "win32":
@@ -62,9 +84,7 @@ def main() -> int:
         if build.returncode:
             return build.returncode
         environment = dict(os.environ)
-        environment["RP_INDEPENDENT_LAUNCHER"] = str(
-            Path("target/debug/running-process-launcher.exe").resolve()
-        )
+        environment["RP_INDEPENDENT_LAUNCHER"] = str(launcher_path())
         test = subprocess.run(
             [*command, "--", *test_filter], check=False, timeout=120, env=environment
         )
