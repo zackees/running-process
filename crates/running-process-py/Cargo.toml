@@ -20,7 +20,7 @@ crate-type = ["cdylib", "lib"]
 libc = "0.2"
 pyo3 = { workspace = true }
 regex = "1"
-running-process = { path = "../running-process", version = "4.10.15", features = ["async-process", "client", "originator-scan", "probe", "pty"] }
+running-process = { path = "../running-process", version = "4.10.16", features = ["async-process", "client", "originator-scan", "probe", "pty"] }
 pyo3-async-runtimes = { version = "0.29", features = ["tokio-runtime"] }
 tokio = { version = "1", default-features = false, features = ["sync"] }
 sysinfo = "0.30"
@@ -28,7 +28,7 @@ prost = "0.14"
 # Supplies the probe_diag.v1 prost enums and the all-thread snapshot API.
 # default-features = false keeps the crate's injection vehicles (gated on its
 # embed-helper feature) out of the extension module entirely.
-running-process-probe = { path = "../running-process-probe", version = "4.10.15", default-features = false }
+running-process-probe = { path = "../running-process-probe", version = "4.10.16", default-features = false }
 # #975: the tracked-pid registry asks the platform facade for the state base
 # directory instead of selecting the host itself.
-running-process-platform-internal = { path = "../running-process-platform-internal", version = "4.10.15", features = ["fs"] }
+running-process-platform-internal = { path = "../running-process-platform-internal", version = "4.10.16", features = ["fs"] }

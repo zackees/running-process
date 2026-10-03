@@ -74,7 +74,7 @@ object = { version = "0.36", default-features = false, features = ["read", "std"
 # #974: which images are loaded is host mechanics and comes from the platform
 # facade. Only the dependency-free core is enabled; the object parsers above
 # stay here, never in the facade.
-running-process-platform-internal = { path = "../running-process-platform-internal", version = "4.10.15", default-features = false }
+running-process-platform-internal = { path = "../running-process-platform-internal", version = "4.10.16", default-features = false }
 
 [target.'cfg(any(target_os = "linux", target_os = "macos"))'.dependencies]
 # #635 cooperative capture uses realtime signals/ucontext on Linux and Mach

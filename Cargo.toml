@@ -21,7 +21,7 @@ members = [
 exclude = ["testbins-tokio"]
 
 [workspace.package]
-version = "4.10.15"
+version = "4.10.16"
 edition = "2021"
 rust-version = "1.95"
 license = "MIT"
