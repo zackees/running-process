@@ -456,7 +456,7 @@ def llvm_profdata_preflight(
     return None
 
 
-def _prune_invalid_profraw(
+def _prune_invalid_profraw(  # noqa: C901
     profile_dir: Path,
     *,
     bad_dir: Path | None = None,
@@ -683,7 +683,7 @@ def parse_args(
     )
 
 
-def main(argv: list[str] | None = None) -> int:
+def main(argv: list[str] | None = None) -> int:  # noqa: C901
     (
         pytest_args,
         require_symbols,

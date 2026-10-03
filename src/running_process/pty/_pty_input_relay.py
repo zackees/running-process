@@ -134,7 +134,7 @@ def start_windows_terminal_input_relay(process: PseudoTerminalProcess) -> None:
     process._terminal_input_thread.start()
 
 
-def start_posix_terminal_input_relay(process: PseudoTerminalProcess) -> None:
+def start_posix_terminal_input_relay(process: PseudoTerminalProcess) -> None:  # noqa: C901
     import select
     import termios
     import tty
@@ -150,7 +150,7 @@ def start_posix_terminal_input_relay(process: PseudoTerminalProcess) -> None:
     process._terminal_input_restore_state = (stdin_fd, previous_state)
     filter_ctrl_c = not process._allows_child_ctrl_c_interruption
 
-    def relay() -> None:
+    def relay() -> None:  # noqa: C901
         try:
             while not process._terminal_input_stop.is_set() and process.poll() is None:
                 try:

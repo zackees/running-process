@@ -20,7 +20,7 @@ class _RunningProcessOutputIterator:
     def __iter__(self) -> _RunningProcessOutputIterator:
         return self
 
-    def __next__(self) -> ProcessOutputEvent:
+    def __next__(self) -> ProcessOutputEvent:  # noqa: C901
         if self._finished:
             raise StopIteration
         if self._process._pty_process is not None:

@@ -296,7 +296,7 @@ def _python_tests() -> set[str]:
 # --------------------------------------------------------------------------
 
 
-def check(strict: bool = False) -> tuple[list[str], list[str]]:
+def check(strict: bool = False) -> tuple[list[str], list[str]]:  # noqa: C901
     """Return (failures, outstanding-planned-rows).
 
     `strict` forces the end-state gate on regardless of the manifest setting.

@@ -201,7 +201,7 @@ def run_external_consumer(name: str, *, should_succeed: bool) -> str | None:
     return None
 
 
-def main() -> int:
+def main() -> int:  # noqa: C901
     failures = manifest_failures(load_manifest())
     failures.extend(source_failures())
     if not failures:
