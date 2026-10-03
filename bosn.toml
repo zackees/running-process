@@ -17,6 +17,7 @@ repo = { source = ".", destination = "/work", readonly = true }
 # generation digest, ensuring changed limits replace a stale container.
 CARGO_BUILD_JOBS = "2"
 CARGO_TARGET_DIR = "/target"
+RUFF_CACHE_DIR = "/uv/cache/ruff"
 SOLDR_JOBS = "2"
 UV_CONCURRENT_BUILDS = "1"
 
