@@ -3,7 +3,6 @@ use std::ffi::OsString;
 use std::io::Write;
 #[cfg(feature = "ape-loader")]
 use std::io::Read;
-#[cfg(feature = "ape-loader")]
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
@@ -41,6 +40,16 @@ fn host_loader() -> Vec<u8> {
 
 fn scratch() -> tempfile::TempDir {
     tempfile::tempdir().expect("scratch directory")
+}
+
+#[test]
+fn scratch_directory_is_owner_private() {
+    let dir = scratch();
+    assert_eq!(
+        std::fs::metadata(dir.path()).unwrap().permissions().mode() & 0o777,
+        0o700,
+        "loader fixtures require a private directory independent of the ambient umask"
+    );
 }
 
 /// Spawn `spec` with its output captured, retrying while a sibling test's
