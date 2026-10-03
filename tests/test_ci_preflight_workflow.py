@@ -59,5 +59,14 @@ class TestPreflightWorkflowContract(unittest.TestCase):
         self.assertIn("run: soldr cargo build --workspace", build)
 
 
+    def test_build_output_writer_receives_terminal_job_status(self) -> None:
+        """CACHE-008: local retention must still refuse a failed build."""
+        setup = "\n".join(named_workflow_step(
+            WORKFLOW.read_text(encoding="utf-8"),
+            "Set up soldr (toolchain + build cache)",
+        ))
+        self.assertIn("job-status: ${{ job.status }}", setup)
+
+
 if __name__ == "__main__":
     unittest.main()
