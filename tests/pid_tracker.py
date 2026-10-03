@@ -15,19 +15,27 @@ import time
 from contextlib import suppress
 from pathlib import Path
 
-_LOG_DIR = Path(__file__).resolve().parent.parent / "logs"
-_PID_LOG = _LOG_DIR / "test-spawned-pids.log"
+from running_process.dump_paths import RUNNING_PROCESS_STACK_DUMP_DIR_ENV
+
+_DEFAULT_LOG_DIR = Path(__file__).resolve().parent.parent / "logs"
 _SELF_PID = os.getpid()
 
 
+def _pid_log() -> Path:
+    """Share the CLI diagnostic root when the source tree is read-only."""
+    configured = os.environ.get(RUNNING_PROCESS_STACK_DUMP_DIR_ENV)
+    root = Path(configured) if configured else _DEFAULT_LOG_DIR
+    return root / "test-spawned-pids.log"
+
+
 def _ensure_log_dir() -> None:
-    _LOG_DIR.mkdir(parents=True, exist_ok=True)
+    _pid_log().parent.mkdir(parents=True, exist_ok=True)
 
 
 def reset_log() -> None:
     """Truncate the PID log at the start of a test session."""
     _ensure_log_dir()
-    _PID_LOG.write_text("", encoding="utf-8")
+    _pid_log().write_text("", encoding="utf-8")
 
 
 def record_pid(pid: int) -> None:
@@ -35,18 +43,18 @@ def record_pid(pid: int) -> None:
     if pid == _SELF_PID or pid <= 0:
         return
     _ensure_log_dir()
-    with open(_PID_LOG, "a", encoding="utf-8") as f:
+    with open(_pid_log(), "a", encoding="utf-8") as f:
         f.write(f"{pid}\n")
         f.flush()
 
 
 def _read_pids() -> list[int]:
     """Read all recorded PIDs from the log."""
-    if not _PID_LOG.exists():
+    if not _pid_log().exists():
         return []
     pids: list[int] = []
     with suppress(OSError):
-        for line in _PID_LOG.read_text(encoding="utf-8").splitlines():
+        for line in _pid_log().read_text(encoding="utf-8").splitlines():
             line = line.strip()
             if line:
                 with suppress(ValueError):

@@ -22,6 +22,10 @@ class TestBosnLinuxStack(unittest.TestCase):
             stack["env"],
             {
                 "CARGO_BUILD_JOBS": "2",
+                "CARGO_TARGET_DIR": "/target",
+                "RUFF_CACHE_DIR": "/uv/cache/ruff",
+                "RUNNING_PROCESS_STACK_DUMP_DIR": "/target/running-process-diagnostics",
+                "PYTEST_ADDOPTS": "-o cache_dir=/target/pytest-cache",
                 "SOLDR_JOBS": "2",
                 "UV_CONCURRENT_BUILDS": "1",
             },
@@ -43,7 +47,7 @@ class TestBosnLinuxStack(unittest.TestCase):
         self.assertEqual(
             stack["volumes"],
             {
-                "target": {"scope": "stack", "destination": "/work/target"},
+                "target": {"scope": "stack", "destination": "/target"},
                 "cargo-home": {"scope": "machine", "destination": "/usr/local/cargo"},
                 "rustup-home": {"scope": "machine", "destination": "/usr/local/rustup"},
                 "uv-cache": {"scope": "machine", "destination": "/uv/cache"},
