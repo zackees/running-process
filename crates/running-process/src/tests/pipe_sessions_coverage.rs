@@ -129,12 +129,12 @@ fn spawn_errors_registry_defaults_and_display_are_stable() {
     assert_eq!(registry.purge_exited(""), 0);
 }
 
-#[test]
 #[expect(
     clippy::cognitive_complexity,
     clippy::too_many_lines,
     reason = "baseline, zackees/ci.yml#229"
 )]
+#[test]
 fn live_session_covers_attachments_stream_and_input_tees_and_purge() {
     let temp = tempfile::tempdir().unwrap();
     let stdout_file = temp.path().join("stdout.log");
