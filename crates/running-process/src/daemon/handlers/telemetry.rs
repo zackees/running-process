@@ -14,6 +14,7 @@ use crate::proto::daemon::{
 use super::util::error_pty_response;
 use super::DaemonState;
 
+#[expect(clippy::too_many_lines, reason = "baseline, zackees/ci.yml#229")]
 pub fn handle_register_session_tee(request: &DaemonRequest, state: &DaemonState) -> DaemonResponse {
     let req = match request.register_session_tee.as_ref() {
         Some(req) => req,

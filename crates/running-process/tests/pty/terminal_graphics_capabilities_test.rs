@@ -60,6 +60,7 @@ fn terminal_graphics_capability_matrix_matches_expectations() {
     export_aggregate(&rows);
 }
 
+#[expect(clippy::too_many_lines, reason = "baseline, zackees/ci.yml#229")]
 fn cases() -> Vec<Case> {
     vec![
         Case {

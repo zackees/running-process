@@ -243,6 +243,7 @@ fn parse_cli(args: &[String]) -> Result<CliOptions, String> {
     Ok(opts)
 }
 
+#[expect(clippy::too_many_lines, reason = "baseline, zackees/ci.yml#229")]
 fn main() -> ExitCode {
     let args: Vec<String> = env::args().collect();
     let opts = match parse_cli(&args) {

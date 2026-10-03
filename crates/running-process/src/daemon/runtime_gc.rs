@@ -121,6 +121,7 @@ fn write_last_seen(sidecar_path: &Path, now_unix_ms: u64) -> Result<bool, String
     Ok(true)
 }
 
+#[expect(clippy::cognitive_complexity, reason = "baseline, zackees/ci.yml#229")]
 fn prune_runtime_root_at(root: &Path, stale_after: Duration, now_unix_ms: u64) -> RuntimeGcStats {
     let mut stats = RuntimeGcStats::default();
     let Ok(entries) = fs::read_dir(root) else {
@@ -182,6 +183,7 @@ pub fn prune_runtime_root(root: &Path, stale_after: Duration) -> RuntimeGcStats 
     prune_runtime_root_at(root, stale_after, now_unix_ms())
 }
 
+#[expect(clippy::cognitive_complexity, reason = "baseline, zackees/ci.yml#229")]
 pub async fn runtime_gc_loop(state: Arc<DaemonState>, interval_secs: u64, stale_after_secs: u64) {
     let mut shutdown_rx = state.shutdown_tx.subscribe();
     let mut interval = tokio::time::interval(Duration::from_secs(interval_secs));

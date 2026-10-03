@@ -385,6 +385,7 @@ where
 /// and readiness checks. Keeping that work on the accept thread serializes
 /// unrelated service roots, so this variant dispatches accepted connections
 /// to workers while retaining a fixed upper bound on broker threads.
+#[expect(clippy::too_many_lines, reason = "baseline, zackees/ci.yml#229")]
 pub(super) fn serve_launch_control_socket_connections_concurrently<R, F>(
     socket_path: &str,
     hello_responder: &R,

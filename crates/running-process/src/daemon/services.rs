@@ -805,6 +805,7 @@ impl ServiceRegistry {
 
     /// One supervision tick: detect children that exited and apply the
     /// restart policy. Returns the number of restarts performed (test hook).
+    #[expect(clippy::cognitive_complexity, reason = "baseline, zackees/ci.yml#229")]
     pub fn supervise_tick(&self) -> usize {
         // Snapshot live names + their exit/uptime status while holding the
         // lock briefly.

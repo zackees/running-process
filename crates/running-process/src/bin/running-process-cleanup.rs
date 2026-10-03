@@ -114,6 +114,7 @@ fn main() -> ExitCode {
     }
 }
 
+#[expect(clippy::too_many_lines, reason = "baseline, zackees/ci.yml#229")]
 fn run() -> Result<()> {
     let cli = Cli::parse();
     let registry_dir = cli

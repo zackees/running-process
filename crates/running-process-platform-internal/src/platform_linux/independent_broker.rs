@@ -411,6 +411,7 @@ mod tests {
     }
 
     #[test]
+    #[expect(clippy::too_many_lines, reason = "baseline, zackees/ci.yml#229")]
     fn broker_owns_target_until_commit_and_preserves_it_after_disconnect() {
         for (committed, stop, partial) in [
             (false, false, 0),

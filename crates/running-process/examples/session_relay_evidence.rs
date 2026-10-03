@@ -134,6 +134,7 @@ fn parse_usize_arg(args: &mut impl Iterator<Item = String>, option: &str) -> io:
     Ok(parsed)
 }
 
+#[expect(clippy::too_many_lines, reason = "baseline, zackees/ci.yml#229")]
 fn parse_topologies() -> io::Result<ParsedArgs> {
     let mut quick = false;
     let mut smoke = false;
@@ -955,6 +956,7 @@ fn process_usage() -> io::Result<Usage> {
 }
 
 #[tokio::main(flavor = "multi_thread")]
+#[expect(clippy::too_many_lines, reason = "baseline, zackees/ci.yml#229")]
 async fn main() -> io::Result<()> {
     let raw_args: Vec<String> = std::env::args().collect();
     if raw_args.get(1).map(String::as_str) == Some("__relay-worker") {
