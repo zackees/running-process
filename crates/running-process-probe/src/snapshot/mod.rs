@@ -46,6 +46,9 @@ mod windows;
 // exercises the backpressure contract rather than only Windows.
 pub mod stream;
 
+#[cfg(any(windows, target_os = "linux", target_os = "macos"))]
+mod cancel;
+
 use std::time::Duration;
 
 /// Upper bound on the stack bytes copied per thread.
@@ -246,9 +249,51 @@ pub fn capture_and_resolve(config: &SnapshotConfig) -> Result<Snapshot, Snapshot
     }
 }
 
+/// Cancel only after native capture has resumed every sibling thread.
+#[cfg(any(windows, target_os = "linux", target_os = "macos"))]
+pub(crate) fn capture_and_resolve_interruptible(
+    config: &SnapshotConfig,
+    stop: &std::sync::atomic::AtomicBool,
+) -> Result<Option<Snapshot>, SnapshotError> {
+    use std::sync::atomic::Ordering;
+    if stop.load(Ordering::Acquire) {
+        return Ok(None);
+    }
+    let mut snapshot = capture_all_threads(config)?;
+    if stop.load(Ordering::Acquire) {
+        return Ok(None);
+    }
+    #[cfg(windows)]
+    {
+        let Some(modules) = modules::enumerate_modules_interruptible(stop)? else {
+            return Ok(None);
+        };
+        unwind::resolve_frames(&mut snapshot, &modules);
+    }
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    if !unwind::resolve_frames_interruptible(&mut snapshot, stop)? {
+        return Ok(None);
+    }
+    if stop.load(Ordering::Acquire) {
+        return Ok(None);
+    }
+    Ok(Some(snapshot))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn stopped_sampler_discards_snapshot_before_native_capture() {
+        let stop = std::sync::atomic::AtomicBool::new(true);
+        assert!(
+            capture_and_resolve_interruptible(&SnapshotConfig::default(), &stop)
+                .unwrap()
+                .is_none()
+        );
+    }
 
     #[test]
     fn default_config_uses_the_documented_cap() {

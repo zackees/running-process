@@ -32,12 +32,13 @@
 
 use std::io;
 use std::ops::Range;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use running_process_platform_internal::platform::process::{
     loaded_images, open_loaded_image_file, LoadedImage, LoadedImageFormat,
 };
 
-const MAX_MODULE_IMAGE_BYTES: u64 = 512 * 1024 * 1024;
+pub(super) const MAX_MODULE_IMAGE_BYTES: u64 = 512 * 1024 * 1024;
 
 fn hex_bytes(bytes: &[u8]) -> String {
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()
@@ -317,18 +318,31 @@ unsafe fn read_sections(base: u64) -> Option<Vec<Section>> {
 
 /// Enumerate every module mapped into this process.
 pub fn enumerate_modules() -> io::Result<Vec<LoadedModule>> {
+    Ok(enumerate_modules_interruptible(&AtomicBool::new(false))?.unwrap_or_default())
+}
+
+/// Return no inventory after shutdown; never expose a partial one.
+pub(crate) fn enumerate_modules_interruptible(
+    stop: &AtomicBool,
+) -> io::Result<Option<Vec<LoadedModule>>> {
+    if stop.load(Ordering::Acquire) {
+        return Ok(None);
+    }
     let mut modules = Vec::new();
     let mut sort = false;
     for image in loaded_images()? {
+        if stop.load(Ordering::Acquire) {
+            return Ok(None);
+        }
         let module = match image.format {
             LoadedImageFormat::Pe => pe_module(image.header_address, image.image_size, image.path),
             LoadedImageFormat::Elf => {
                 sort = true;
-                elf_module(image)
+                elf_module(image, stop)
             }
             LoadedImageFormat::MachO => {
                 sort = true;
-                macho_module(image)
+                macho_module(image, stop)
             }
             _ => None,
         };
@@ -337,7 +351,10 @@ pub fn enumerate_modules() -> io::Result<Vec<LoadedModule>> {
     if sort {
         modules.sort_by_key(|module| module.base);
     }
-    Ok(modules)
+    if stop.load(Ordering::Acquire) {
+        return Ok(None);
+    }
+    Ok(Some(modules))
 }
 
 fn pe_module(base: u64, image_size: u64, path: Option<String>) -> Option<LoadedModule> {
@@ -360,39 +377,26 @@ fn pe_module(base: u64, image_size: u64, path: Option<String>) -> Option<LoadedM
 }
 
 /// Read the whole file behind `image`, bounded, or `None`.
-fn read_image_file(image: &LoadedImage) -> Option<Vec<u8>> {
-    use std::io::Read as _;
-
-    let file_handle = open_loaded_image_file(image)?;
-    // Refuse an oversized file before reading any of it: `/proc/self/maps`
-    // lists every file-backed mapping, large data files included. A metadata
-    // failure falls through to the bounded read below.
-    if let Ok(metadata) = file_handle.metadata() {
-        if metadata.len() > MAX_MODULE_IMAGE_BYTES {
-            return None;
-        }
-    }
-    let mut data = Vec::new();
-    if file_handle
-        .take(MAX_MODULE_IMAGE_BYTES + 1)
-        .read_to_end(&mut data)
-        .is_err()
-        || data.len() as u64 > MAX_MODULE_IMAGE_BYTES
-    {
-        // A deleted/replaced mapping remains valid for raw capture but
-        // cannot safely provide unwind metadata from disk. Leave it out
-        // rather than attribute it to a different build.
+fn read_image_file(image: &LoadedImage, stop: &AtomicBool) -> Option<Vec<u8>> {
+    if stop.load(Ordering::Acquire) {
         return None;
     }
-    Some(data)
+    let file_handle = open_loaded_image_file(image)?;
+    if file_handle
+        .metadata()
+        .is_ok_and(|metadata| metadata.len() > MAX_MODULE_IMAGE_BYTES)
+    {
+        return None;
+    }
+    super::cancel::read_to_end(file_handle, stop, MAX_MODULE_IMAGE_BYTES as usize).ok()?
 }
 
-fn elf_module(image: LoadedImage) -> Option<LoadedModule> {
+fn elf_module(image: LoadedImage, stop: &AtomicBool) -> Option<LoadedModule> {
     use object::{Object, ObjectKind, ObjectSection};
 
     let mapped_start = image.mapped_ranges.first()?.start;
     let mapped_end = image.mapped_ranges.last()?.end;
-    let data = read_image_file(&image)?;
+    let data = read_image_file(&image, stop)?;
     let file = object::File::parse(data.as_slice()).ok()?;
     let load_bias = image.elf_load_bias?;
     let debug_id = format!("elf:{}", hex_bytes(image.build_id.as_deref()?));
@@ -445,7 +449,7 @@ fn add_slide(address: u64, slide: i64) -> Option<u64> {
     }
 }
 
-fn macho_module(image: LoadedImage) -> Option<LoadedModule> {
+fn macho_module(image: LoadedImage, stop: &AtomicBool) -> Option<LoadedModule> {
     use object::{Object, ObjectSection, ObjectSegment};
 
     let header = image.header_address;
@@ -453,7 +457,7 @@ fn macho_module(image: LoadedImage) -> Option<LoadedModule> {
     // Some system images live only in the shared dyld cache. Their raw frames
     // remain unattributed rather than being paired with metadata read from a
     // different file.
-    let data = read_image_file(&image)?;
+    let data = read_image_file(&image, stop)?;
     let file = object::File::parse(data.as_slice()).ok()?;
     if file.mach_uuid().ok().flatten() != Some(loaded_uuid) {
         // The path can be replaced while dyld keeps the original image
@@ -524,6 +528,13 @@ pub fn module_for_address(modules: &[LoadedModule], address: u64) -> Option<&Loa
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn stopped_inventory_does_not_return_partial_modules() {
+        assert!(enumerate_modules_interruptible(&AtomicBool::new(true))
+            .unwrap()
+            .is_none());
+    }
 
     #[test]
     fn elf_load_bias_does_not_expand_mapped_coverage_to_zero() {

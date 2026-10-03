@@ -19,6 +19,8 @@
 //! symbolization, which happens off-process in a later slice.
 
 use std::ops::Range;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+use std::sync::atomic::{AtomicBool, Ordering};
 
 #[cfg(windows)]
 use framehop::ModuleSectionInfo;
@@ -433,7 +435,10 @@ pub fn resolve_frames(snapshot: &mut Snapshot, modules: &[LoadedModule]) {
 /// mapped in this process. Object parsing happens only after capture, when
 /// every sibling is running again.
 #[cfg(any(target_os = "linux", target_os = "macos"))]
-fn build_unix_unwinder(modules: &[LoadedModule]) -> ArchUnwinder<Vec<u8>> {
+fn build_unix_unwinder(
+    modules: &[LoadedModule],
+    stop: &AtomicBool,
+) -> Option<ArchUnwinder<Vec<u8>>> {
     use framehop::ExplicitModuleSectionInfo;
     #[cfg(target_os = "macos")]
     use object::ObjectSegment;
@@ -459,10 +464,23 @@ fn build_unix_unwinder(modules: &[LoadedModule]) -> ArchUnwinder<Vec<u8>> {
 
     let mut unwinder = ArchUnwinder::new();
     for module in modules {
+        if stop.load(Ordering::Acquire) {
+            return None;
+        }
         let Some(path) = module.path.as_deref() else {
             continue;
         };
-        let Ok(data) = std::fs::read(path) else {
+        let Ok(reader) = std::fs::File::open(path) else {
+            continue;
+        };
+        let Ok(Some(data)) = super::cancel::read_to_end(
+            reader,
+            stop,
+            super::modules::MAX_MODULE_IMAGE_BYTES as usize,
+        ) else {
+            if stop.load(Ordering::Acquire) {
+                return None;
+            }
             continue;
         };
         let Ok(file) = object::File::parse(data.as_slice()) else {
@@ -524,20 +542,39 @@ fn build_unix_unwinder(modules: &[LoadedModule]) -> ArchUnwinder<Vec<u8>> {
             info,
         ));
     }
-    unwinder
+    if stop.load(Ordering::Acquire) {
+        return None;
+    }
+    Some(unwinder)
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 /// Resolve every raw sample against the current process's ELF/Mach-O images.
 pub fn resolve_frames_for_current_process(snapshot: &mut Snapshot) -> std::io::Result<()> {
-    let modules = super::modules::enumerate_modules()?;
-    let unwinder = build_unix_unwinder(&modules);
+    let _ = resolve_frames_interruptible(snapshot, &AtomicBool::new(false))?;
+    Ok(())
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+pub(crate) fn resolve_frames_interruptible(
+    snapshot: &mut Snapshot,
+    stop: &AtomicBool,
+) -> std::io::Result<bool> {
+    let Some(modules) = super::modules::enumerate_modules_interruptible(stop)? else {
+        return Ok(false);
+    };
+    let Some(unwinder) = build_unix_unwinder(&modules, stop) else {
+        return Ok(false);
+    };
     let mut cache = ArchCache::new();
     for sample in &mut snapshot.threads {
+        if stop.load(Ordering::Acquire) {
+            return Ok(false);
+        }
         sample.frames = unwind_sample(&unwinder, &mut cache, sample, &modules);
     }
     snapshot.frames_resolved = true;
-    Ok(())
+    Ok(true)
 }
 
 #[cfg(all(test, windows))]
