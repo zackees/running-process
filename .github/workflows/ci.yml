@@ -18,14 +18,18 @@ on:
 permissions:
   contents: read
 
+# A label event runs only the lanes that label adds (see each job's `if:`), in
+# its own group, so it no longer cancels and restarts the push run for the same
+# SHA. Before this, 82 of 115 cancelled PR runs in a week (2026-09-25..10-02)
+# were a ci-mac/ci-windows/ci-full label restarting an identical quick run.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref == 'refs/heads/main' && github.run_id || github.ref }}
+  group: ${{ github.workflow }}-${{ github.ref == 'refs/heads/main' && github.run_id || github.ref }}${{ (github.event.action == 'labeled' || github.event.action == 'unlabeled') && format('-label-{0}', github.event.label.name) || '' }}
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
   linux-quick:
     name: Linux x64 checks
-    if: ${{ github.event_name != 'schedule' && !(github.event_name == 'workflow_dispatch' && inputs.full) && !(github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'ci-full')) }}
+    if: ${{ github.event_name != 'schedule' && !(github.event_name == 'workflow_dispatch' && inputs.full) && !(github.event_name == 'pull_request' && (contains(github.event.pull_request.labels.*.name, 'ci-full') || !((github.event.action != 'labeled' || github.event.label.name == 'ci-integration') && github.event.action != 'unlabeled'))) }}
     uses: ./.github/workflows/ci-preflight.yml
     with:
       os: ubuntu-24.04
@@ -36,27 +40,29 @@ jobs:
 
   linux-full:
     name: Linux full matrix
-    if: ${{ github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.full) || (github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'ci-full')) }}
+    if: ${{ github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.full) || (github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'ci-full') && (github.event.action != 'labeled' || github.event.label.name == 'ci-full') && github.event.action != 'unlabeled') }}
     uses: ./.github/workflows/ci-linux.yml
 
   macos:
     name: macOS tests
-    if: ${{ github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.full) || (github.event_name == 'pull_request' && (contains(github.event.pull_request.labels.*.name, 'ci-mac') || contains(github.event.pull_request.labels.*.name, 'ci-full'))) }}
+    if: ${{ github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.full) || (github.event_name == 'pull_request' && (contains(github.event.pull_request.labels.*.name, 'ci-mac') || contains(github.event.pull_request.labels.*.name, 'ci-full')) && (github.event.action != 'labeled' || github.event.label.name == 'ci-mac' || github.event.label.name == 'ci-full') && github.event.action != 'unlabeled') }}
     uses: ./.github/workflows/ci-macos.yml
 
   windows:
     name: Windows tests
-    if: ${{ github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.full) || (github.event_name == 'pull_request' && (contains(github.event.pull_request.labels.*.name, 'ci-windows') || contains(github.event.pull_request.labels.*.name, 'ci-full'))) }}
+    if: ${{ github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.full) || (github.event_name == 'pull_request' && (contains(github.event.pull_request.labels.*.name, 'ci-windows') || contains(github.event.pull_request.labels.*.name, 'ci-full')) && (github.event.action != 'labeled' || github.event.label.name == 'ci-windows' || github.event.label.name == 'ci-full') && github.event.action != 'unlabeled') }}
     uses: ./.github/workflows/ci-windows.yml
 
   coverage:
     name: Linux coverage
-    if: ${{ github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.full) || (github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'ci-full')) }}
+    if: ${{ github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.full) || (github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'ci-full') && (github.event.action != 'labeled' || github.event.label.name == 'ci-full') && github.event.action != 'unlabeled') }}
     uses: ./.github/workflows/coverage.yml
+    secrets:
+      CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
 
   all-features:
     name: Windows and macOS all-features tests
-    if: ${{ github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.full) || (github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'ci-full')) }}
+    if: ${{ github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.full) || (github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'ci-full') && (github.event.action != 'labeled' || github.event.label.name == 'ci-full') && github.event.action != 'unlabeled') }}
     uses: ./.github/workflows/ci-all-features.yml
 
   cache-budget:

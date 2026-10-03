@@ -29,14 +29,7 @@ fn target_profile_dir() -> PathBuf {
 }
 
 fn build_interposer_dll() -> PathBuf {
-    let mut cmd = if which::which("soldr").is_ok() {
-        let mut c = Command::new("soldr");
-        c.arg("cargo");
-        c
-    } else {
-        Command::new("cargo")
-    };
-    let status = cmd
+    let status = cargo_command()
         .args(["build", "-p", "running-process-probe-interposer-windows"])
         .status()
         .expect("cargo build");
@@ -44,6 +37,30 @@ fn build_interposer_dll() -> PathBuf {
     let p = target_profile_dir().join("running_process_probe_interposer_windows.dll");
     assert!(p.exists(), "interposer DLL missing at {p:?}");
     p
+}
+
+/// The toolchain's own cargo, resolved through soldr when it is present.
+///
+/// Not `soldr cargo`: this test already runs under `soldr cargo nextest`, and
+/// soldr's strict re-entrancy guard refuses a nested `soldr -> cargo -> test
+/// -> soldr` chain as a probable hang (soldr#2547), failing every Windows
+/// all-features run. `interposer_integration_windows.rs` resolves cargo the
+/// same way and passes in that run.
+fn cargo_command() -> Command {
+    if let Ok(soldr) = which::which("soldr") {
+        if let Ok(output) = Command::new(soldr)
+            .args(["rustup", "which", "cargo"])
+            .output()
+        {
+            if output.status.success() {
+                let cargo = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                if !cargo.is_empty() {
+                    return Command::new(cargo);
+                }
+            }
+        }
+    }
+    Command::new("cargo")
 }
 
 /// Minimal `which` for soldr lookup, avoiding the extra crate dep.
