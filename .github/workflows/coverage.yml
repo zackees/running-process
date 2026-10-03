@@ -2,6 +2,12 @@ name: Coverage
 
 on:
   workflow_call:
+    # A called workflow sees no caller secrets unless they are passed: without
+    # this the upload ran with an empty CODECOV_TOKEN and failed every ci-full
+    # PR and nightly run.
+    secrets:
+      CODECOV_TOKEN:
+        required: false
 
 # Full coverage runs are invoked by ci.yml on ci-full PRs and nightly.
 # This expensive lane stays out of ordinary PR and main-push checks.
