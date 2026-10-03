@@ -39,7 +39,11 @@ fn host_loader() -> Vec<u8> {
 }
 
 fn scratch() -> tempfile::TempDir {
-    tempfile::tempdir().expect("scratch directory")
+    // Valid loader caches must be private even under a permissive caller umask.
+    tempfile::Builder::new()
+        .permissions(std::fs::Permissions::from_mode(0o700))
+        .tempdir()
+        .expect("scratch directory")
 }
 
 #[test]
