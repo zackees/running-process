@@ -74,6 +74,11 @@ fn long_lived_cmd() -> Vec<String> {
 // ---------------------------------------------------------------------------
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[expect(
+    clippy::cognitive_complexity,
+    clippy::too_many_lines,
+    reason = "baseline, zackees/ci.yml#229"
+)]
 async fn test_service_lifecycle_and_remaining_stubs() {
     let scope = test_scope!();
     let (server_handle, socket) = start_server(&scope);

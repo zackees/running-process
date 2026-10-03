@@ -194,6 +194,11 @@ fn init_logging() {
         .init();
 }
 
+#[expect(
+    clippy::cognitive_complexity,
+    clippy::too_many_lines,
+    reason = "baseline, zackees/ci.yml#229"
+)]
 fn main() {
     let cli = Cli::parse();
     match cli.command {
@@ -409,6 +414,7 @@ fn main() {
     }
 }
 
+#[expect(clippy::too_many_lines, reason = "baseline, zackees/ci.yml#229")]
 fn run_sessions_command(command: SessionsCommand) {
     let mut client = match client::DaemonClient::connect(None) {
         Ok(c) => c,

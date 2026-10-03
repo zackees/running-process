@@ -94,6 +94,7 @@ impl DaemonServer {
     }
 
     /// Run the IPC server, blocking until shutdown is signalled.
+    #[expect(clippy::cognitive_complexity, reason = "baseline, zackees/ci.yml#229")]
     pub async fn run(&self) -> Result<(), Box<dyn std::error::Error>> {
         let socket_path = &self.state.socket_path;
         let endpoint = IpcEndpoint::new(socket_path.clone())?;
@@ -208,6 +209,7 @@ impl DaemonServer {
 /// Failures are logged at warn level so a single bad entry does not
 /// prevent the daemon from starting; the rest of the autostart list
 /// still runs.
+#[expect(clippy::cognitive_complexity, reason = "baseline, zackees/ci.yml#229")]
 pub fn spawn_autostart_sessions(
     state: &DaemonState,
     entries: &[crate::daemon::config::AutostartSession],
@@ -306,6 +308,7 @@ pub fn spawn_autostart_sessions(
 /// kill-on-close fires anyway as the daemon exits, but the explicit
 /// terminate makes the cleanup observable in tests and consistent across
 /// platforms.
+#[expect(clippy::cognitive_complexity, reason = "baseline, zackees/ci.yml#229")]
 async fn reap_all_sessions(state: &DaemonState) {
     let mut pids_to_wait = Vec::new();
 
@@ -374,6 +377,7 @@ async fn handle_connection(
     result
 }
 
+#[expect(clippy::cognitive_complexity, reason = "baseline, zackees/ci.yml#229")]
 async fn handle_connection_inner(
     stream: impl tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
     shutdown_rx: &mut watch::Receiver<bool>,

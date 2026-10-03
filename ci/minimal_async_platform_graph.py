@@ -91,7 +91,7 @@ ROOT_OPTIONAL_HEAVY_DEPENDENCIES = (
 )
 
 
-def check_root_tokio(root: Mapping[str, object], failures: list[str]) -> None:
+def check_root_tokio(root: Mapping[str, object], failures: list[str]) -> None:  # noqa: C901
     tokio = dependency(root, "tokio")
     if tokio is None:
         failures.append("root must depend on Tokio for the actor runtime (#850)")
@@ -157,7 +157,7 @@ def require_feature(
         )
 
 
-def check_manifests(
+def check_manifests(  # noqa: C901
     internal: Mapping[str, object],
     root: Mapping[str, object],
     *,

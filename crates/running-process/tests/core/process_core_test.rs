@@ -1243,6 +1243,7 @@ time.sleep(60)";
 /// `wait_for_capture_completion`. Mirrors the `uv run python ...`
 /// shape, where uv exits while a python grandchild keeps the pipe open.
 #[test]
+#[expect(clippy::too_many_lines, reason = "baseline, zackees/ci.yml#229")]
 fn kill_returns_when_grandchild_inherits_stdout_pipe() {
     // Parent: print its own PID, spawn a grandchild python that sleeps
     // 60 s with inherited stdout, then itself sleep 60 s. We kill the

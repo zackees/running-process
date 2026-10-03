@@ -57,7 +57,7 @@ _PTY_POLL_INTERVAL_SECONDS = 0.001
 _PTY_READER_NATIVE_CLOSE_WAIT_SECONDS = 2.0
 
 
-def wait_for(
+def wait_for(  # noqa: C901
     process: PseudoTerminalProcess,
     *conditions: (
         WaitCondition

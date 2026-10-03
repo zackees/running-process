@@ -87,6 +87,7 @@ fn attachment_metadata_steal_backlog_and_exit_paths_are_deterministic() {
 }
 
 #[test]
+#[expect(clippy::too_many_lines, reason = "baseline, zackees/ci.yml#229")]
 fn output_and_input_tee_wrappers_cover_ring_channel_callback_file_and_status() {
     let session = session();
     let temp = tempfile::tempdir().unwrap();

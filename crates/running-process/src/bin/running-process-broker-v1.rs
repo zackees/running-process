@@ -31,6 +31,7 @@ use running_process::broker::{
 
 const ADMIN_SOCKET_ENV: &str = running_process::env_vars::BROKER_V1_SOCKET.name;
 
+#[expect(clippy::too_many_lines, reason = "baseline, zackees/ci.yml#229")]
 fn main() {
     if let Err(err) = refuse_privileged_run() {
         eprintln!("{err}");

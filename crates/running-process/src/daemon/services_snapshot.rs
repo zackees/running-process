@@ -164,6 +164,7 @@ pub fn save_snapshot(reg: &ServiceRegistry) -> Result<(PathBuf, u32), ServiceErr
 /// Restore service definitions from `services.snapshot.json` and re-launch
 /// every service that was `online` at snapshot time. Returns
 /// `(restored_count, restarted_count)`.
+#[expect(clippy::cognitive_complexity, reason = "baseline, zackees/ci.yml#229")]
 pub fn resurrect_from_snapshot(reg: &ServiceRegistry) -> Result<(u32, u32), ServiceError> {
     let snapshot_path = reg.snapshot_path.clone();
     let bytes = match std::fs::read(&snapshot_path) {

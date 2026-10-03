@@ -5,7 +5,7 @@
 # independently. Keep this Rust image aligned with the workspace
 # rust-toolchain.toml (currently 1.95.0).
 
-FROM rust:1.95.0-bookworm
+FROM rust:1.95.0-bookworm@sha256:6258907abe69656e41cd992e0b705cdcfabcbbe3db374f92ed2d47121282d4a1
 
 # Native and Python dependencies used by the repository's Linux test and
 # lint entrypoints. The protocol package owns protobuf generation.

@@ -645,6 +645,7 @@ fn ingest_pending_with_store_and_worker(
     Ok(written)
 }
 
+#[expect(clippy::too_many_lines, reason = "baseline, zackees/ci.yml#229")]
 fn migrate(conn: &Connection) -> Result<(), CrashStoreError> {
     let found: i64 = conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
     if found > SCHEMA_VERSION {

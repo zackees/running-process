@@ -34,6 +34,11 @@ use crate::terminal_graphics::{
 /// Returns once the stream ends (client disconnect, detach request, session
 /// exit, or terminate). The framed transport is consumed; the caller should
 /// drop the connection afterwards.
+#[expect(
+    clippy::cognitive_complexity,
+    clippy::too_many_lines,
+    reason = "baseline, zackees/ci.yml#229"
+)]
 pub async fn run_attach_stream<T>(
     mut framed: Framed<T, LengthDelimitedCodec>,
     request_id: u64,
@@ -237,6 +242,7 @@ fn encode_outbound(frame: OutboundFrame) -> (bool, PtyStreamFrame) {
 
 /// Apply a client → daemon input frame. Returns `true` if the client
 /// requested detach and the streaming loop should terminate cleanly.
+#[expect(clippy::cognitive_complexity, reason = "baseline, zackees/ci.yml#229")]
 fn apply_input_frame(
     input: PtyInputFrame,
     session: &Arc<crate::daemon::pty_sessions::OwnedPtySession>,

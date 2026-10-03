@@ -63,7 +63,7 @@ def wait_for_expect(
     return result
 
 
-def expect(
+def expect(  # noqa: C901
     process: PseudoTerminalProcess,
     pattern: ExpectPattern,
     *,

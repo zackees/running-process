@@ -37,7 +37,7 @@ def render_record(rows: Iterable[tuple[str, bytes]], record_name: str) -> bytes:
     return buffer.getvalue().encode("utf-8")
 
 
-def validate_record(wheel: Path) -> None:
+def validate_record(wheel: Path) -> None:  # noqa: C901
     errors: list[str] = []
     with zipfile.ZipFile(wheel) as zf:
         names = zf.namelist()

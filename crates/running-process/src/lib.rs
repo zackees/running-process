@@ -606,6 +606,7 @@ impl NativeProcess {
         public_symbols::rp_native_process_start_public(self)
     }
 
+    #[expect(clippy::too_many_lines, reason = "baseline, zackees/ci.yml#229")]
     fn start_impl(&self) -> Result<(), ProcessError> {
         crate::rp_rust_debug_scope!("running_process::NativeProcess::start");
         let _gate = self.start_gate.lock().expect("start gate poisoned");

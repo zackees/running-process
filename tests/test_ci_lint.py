@@ -114,6 +114,7 @@ def test_dylint_gate_runs_every_command_and_stops_at_the_first_violation(
 
 
 def test_main_runs_lint_commands_through_running_process_cli(monkeypatch) -> None:
+    monkeypatch.delenv(ci_lint.COMMAND_TIMEOUT_ENV, raising=False)
     commands: list[list[str]] = []
     monkeypatch.setattr(
         ci_lint,
@@ -394,9 +395,7 @@ def test_main_runs_lint_commands_through_running_process_cli(monkeypatch) -> Non
             "ruff",
             "check",
             "--fix",
-            "src",
-            "tests",
-            "ci",
+            ".",
         ],
         [
             python,

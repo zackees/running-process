@@ -84,7 +84,7 @@ def _analytics_failure_excerpt(data: dict[str, object]) -> list[str]:
     return _extract_pytest_failure_excerpt(tail_lines)
 
 
-def _render_analytics(path: Path) -> list[str]:
+def _render_analytics(path: Path) -> list[str]:  # noqa: C901
     data = _load_json(path)
     if data is None:
         return []
@@ -149,7 +149,7 @@ def _render_analytics(path: Path) -> list[str]:
     return summary
 
 
-def _render_running_process_dump(path: Path) -> list[str]:
+def _render_running_process_dump(path: Path) -> list[str]:  # noqa: C901
     data = _load_json(path)
     if data is None:
         return []

@@ -69,6 +69,7 @@ fn broker_restart_re_adopts_live_backend_and_serves_next_client() {
 }
 
 #[test]
+#[expect(clippy::too_many_lines, reason = "baseline, zackees/ci.yml#229")]
 fn backend_crash_concurrent_reconnects_launch_one_replacement_without_disturbing_other_instance() {
     let service_a = unique_name("backend-crash-a");
     let service_b = unique_name("backend-crash-b");

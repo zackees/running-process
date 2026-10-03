@@ -10,13 +10,10 @@ pub(crate) fn result(code: i32, operation: &str) -> io::Result<()> {
         // SCHED_E_USER_NOT_LOGGED_ON: InteractiveToken cannot run without
         // the requested user's existing session. Never fall back to inheritance.
         _ if code as u32 == 0x80041320 => Err(io::Error::from(io::ErrorKind::Unsupported)),
-        _ => Err(io::Error::new(
-            io::ErrorKind::Other,
-            format!(
-                "Task Scheduler {operation} failed (HRESULT 0x{:08x})",
-                code as u32
-            ),
-        )),
+        _ => Err(io::Error::other(format!(
+            "Task Scheduler {operation} failed (HRESULT 0x{:08x})",
+            code as u32
+        ))),
     }
 }
 

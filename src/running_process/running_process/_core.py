@@ -86,7 +86,7 @@ class RunningProcess:
     SignalBool = SignalBool
     end_of_stream_type = EndOfStream
 
-    def __init__(
+    def __init__(  # noqa: C901
         self,
         command: str | list[str],
         cwd: Path | None = None,
@@ -377,7 +377,7 @@ class RunningProcess:
             raise TimeoutError("No stderr available before timeout")
         return EOS
 
-    def get_next_line_non_blocking(self) -> EchoValue | None | EndOfStream:
+    def get_next_line_non_blocking(self) -> EchoValue | EndOfStream | None:
         try:
             return self.get_next_line(timeout=0)
         except TimeoutError:

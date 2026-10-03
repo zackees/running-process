@@ -217,7 +217,7 @@ def build_trampoline(mode: BuildMode, *, env: dict[str, str] | None = None) -> i
     return 0
 
 
-def run_build(mode: BuildMode) -> int:
+def run_build(mode: BuildMode) -> int:  # noqa: C901
     from ci.env import build_env
     from ci.tiny_pdb import (
         apply_tiny_pdb_env,
