@@ -254,7 +254,7 @@ fn spawn_sync_daemon_inner(
         None => crate::platform::process::configure_sync_daemon_command(command)?,
     }
 
-    let child = command.spawn()?;
+    let child = crate::platform::ape::spawn_std(command, |command| command.spawn())?;
     let pid = child.id();
     Ok(crate::platform::process::DaemonChild {
         pid,
@@ -284,7 +284,7 @@ fn spawn_sync_inner(command: &mut Command, stdio: crate::platform::process::Spaw
     if detached { crate::platform::process::configure_sync_daemon_command(command)?; }
     else { crate::platform::process::configure_sync_contained_command(command)?; }
 
-    let mut child = command.spawn()?;
+    let mut child = crate::platform::ape::spawn_std(command, |command| command.spawn())?;
     let pid = child.id();
     let pgid = pid as i32;
 

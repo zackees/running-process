@@ -57,6 +57,14 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: "always"
+  # Link glibc binaries with a GNU build-id note, as ci-preflight-rust.yml
+  # already does for musl. Since CACHE-025 soldr links these targets through
+  # its managed clang + lld, which emits no build-id unless asked, and the
+  # build-id tests (`current_executable_exposes_a_gnu_build_id`, the probe's
+  # PT_NOTE module attribution) cannot find one. Target-scoped, so the
+  # Windows and macOS lanes that share this workflow are unaffected.
+  CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: "-C link-arg=-Wl,--build-id=sha1"
+  CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS: "-C link-arg=-Wl,--build-id=sha1"
 
 jobs:
   preflight:

@@ -137,9 +137,7 @@ declare! {
         EnvKind::Text, Owner::Foreign, "not started by systemd",
         "Set by systemd for a unit invocation; identifies the launching unit.";
     LOCALAPPDATA => use running_process_platform_internal::env_vars::LOCALAPPDATA;
-    PATH => "PATH",
-        EnvKind::Text, Owner::Foreign, "the child inherits no explicit PATH",
-        "Executable search path, forwarded to the symbolization worker.";
+    PATH => use running_process_platform_internal::env_vars::PATH;
     BROKER_ALLOW_PRIVILEGED => "RUNNING_PROCESS_BROKER_ALLOW_PRIVILEGED",
         EnvKind::ExactValue("1"), Owner::Crate, "privileged startup is refused",
         "Opt out of the broker's refusal to start as root or LocalSystem.";

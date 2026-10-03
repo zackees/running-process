@@ -119,6 +119,19 @@ pub use fs::{
     FileIdentity as FsFileIdentity,
 };
 
+#[path = "platform_macos/ape.rs"]
+pub(crate) mod ape;
+pub use ape::{
+    default_loader_dirs as ape_default_loader_dirs, is_exec_format_error as ape_is_exec_format_error,
+    is_executable as ape_is_executable, mark_executable as ape_mark_executable,
+    anonymous_executable as ape_anonymous_executable,
+    private_exec_dir as ape_private_exec_dir,
+    route_through_execvp as ape_route_through_execvp, APE_LOADER_HOST,
+    APE_EXECVP_SHELL_FALLBACK, APE_NEEDS_LOADER, APE_SHELL, APE_SYSTEM_LOADERS,
+};
+#[cfg(feature = "async-process")]
+pub use ape::route_tokio_through_execvp as ape_route_tokio_through_execvp;
+
 #[path = "platform_macos/executable.rs"]
 pub(crate) mod executable;
 pub use executable::{

@@ -134,6 +134,14 @@ pub use platform_imp::{process_can_replace_current_image, process_replace_curren
 
 pub use platform_imp::{process_loaded_images, process_open_loaded_image_file};
 
+#[cfg(feature = "async-process")]
+pub use platform_imp::ape_route_tokio_through_execvp;
+pub use platform_imp::{
+    ape_anonymous_executable, ape_default_loader_dirs, ape_is_exec_format_error, ape_is_executable,
+    ape_mark_executable, ape_private_exec_dir, ape_route_through_execvp, APE_EXECVP_SHELL_FALLBACK,
+    APE_LOADER_HOST, APE_NEEDS_LOADER, APE_SHELL, APE_SYSTEM_LOADERS,
+};
+
 pub use platform_imp::{
     observer_backend as process_observer_backend, read_process_argv as process_read_argv,
     read_process_cmdline as process_read_cmdline,
@@ -609,8 +617,52 @@ impl SpawnSpec {
                 "creation flags and address-space limits apply only to SpawnSpec::from_std_command",
             ));
         }
-        let mut command = Command::new(&self.program);
-        command.args(&self.args);
+        // An Actually Portable Executable runs through its loader on a host
+        // that cannot exec it. Planned before the spawn: once a `pre_exec`
+        // hook routes std through `execvp`, glibc would hand a refused image
+        // to `/bin/sh` silently, and the prologue needs `PATH`, `dd` and
+        // `gzip` in the child where the planned loader needs nothing.
+        let options = platform::ape::ApeOptions::with_overrides(
+            self.clear_env,
+            self.env
+                .iter()
+                .map(|(key, value)| (key.as_os_str(), Some(value.as_os_str()))),
+        );
+        let mut command = match platform::ape::plan_launch(
+            &self.program,
+            self.current_dir.as_deref(),
+            &options,
+        ) {
+            Some(launch) => {
+                let mut command =
+                    self.command(launch.loader.as_os_str(), &launch.args(&self.args))?;
+                if let Some(path) = launch.child_path(options.path.as_deref()) {
+                    command.env("PATH", path);
+                }
+                command
+            }
+            None => self.command(&self.program, &self.args)?,
+        };
+        // A loader planning just installed can still be held open by a child
+        // a spawner outside the fork lock forked meanwhile (ETXTBSY).
+        let mut spawn = || {
+            platform::ape::retry_while_busy(|| {
+                let _fork = platform::ape::fork_guard();
+                command.spawn()
+            })
+        };
+        let child = match self.admission.as_ref() {
+            Some(admission) => admission.run(spawn)?,
+            None => spawn()?,
+        };
+        platform_imp::after_spawn(&child, self.kill_when_owner_dies, self.nice)?;
+        Ok(PlatformChild::new(child, self.create_process_group))
+    }
+
+    /// The command this spec describes, running `program` with `args`.
+    fn command(&self, program: &OsStr, args: &[OsString]) -> io::Result<Command> {
+        let mut command = Command::new(program);
+        command.args(args);
         if let Some(current_dir) = self.current_dir.as_deref() {
             command.current_dir(current_dir);
         }
@@ -630,14 +682,7 @@ impl SpawnSpec {
             self.kill_when_owner_dies,
             self.nice,
         )?;
-
-        let mut spawn = || command.spawn();
-        let child = match self.admission.as_ref() {
-            Some(admission) => admission.run(spawn)?,
-            None => spawn()?,
-        };
-        platform_imp::after_spawn(&child, self.kill_when_owner_dies, self.nice)?;
-        Ok(PlatformChild::new(child, self.create_process_group))
+        Ok(command)
     }
 
     fn spawn_override(self) -> io::Result<PlatformChild> {
@@ -679,7 +724,7 @@ impl SpawnSpec {
             .stdin(self.stdin.apply())
             .stdout(self.stdout.apply())
             .stderr(self.stderr.apply());
-        let mut spawn = || command.spawn();
+        let mut spawn = || platform::ape::spawn_tokio(&mut command, |command| command.spawn());
         let child = match self.admission.as_ref() {
             Some(admission) => admission.run(spawn)?,
             None => spawn()?,

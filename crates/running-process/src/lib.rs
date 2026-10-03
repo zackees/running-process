@@ -27,6 +27,7 @@ pub use running_process_platform_internal::foreground;
 pub(crate) use running_process_platform_internal::platform;
 
 mod actor_runtime;
+pub mod ape;
 #[cfg(feature = "async-process")]
 mod async_process;
 #[cfg(feature = "async-process")]
@@ -649,7 +650,11 @@ impl NativeProcess {
             }
         } else {
             ChildState::from_std(
-                command.spawn().map_err(ProcessError::Spawn)?,
+                running_process_platform_internal::platform::ape::spawn_std(
+                    &mut command,
+                    |command| command.spawn(),
+                )
+                .map_err(ProcessError::Spawn)?,
                 self.config.create_process_group,
             )
         };
@@ -1317,14 +1322,37 @@ impl NativeProcess {
         let mut command = match command_override {
             Some(command) => command,
             None => {
+                // The child's PATH to set last, when an APE launch puts its
+                // loader's directory first on it.
+                let mut ape_path = None;
                 let mut command = match &self.config.command {
                     CommandSpec::Shell(command) => shell_command(command),
                     CommandSpec::Argv(argv) => {
-                        let mut command = Command::new(&argv[0]);
-                        if argv.len() > 1 {
-                            command.args(&argv[1..]);
+                        // An APE image runs through its planned loader on a
+                        // host that cannot exec it (see `crate::ape`).
+                        let options = platform::ape::ApeOptions::with_overrides(
+                            self.config.env.is_some(),
+                            self.config.env.iter().flatten().map(|(key, value)| {
+                                (std::ffi::OsStr::new(key), Some(std::ffi::OsStr::new(value)))
+                            }),
+                        );
+                        match platform::ape::plan_launch(
+                            std::ffi::OsStr::new(&argv[0]),
+                            self.config.cwd.as_deref(),
+                            &options,
+                        ) {
+                            Some(launch) => {
+                                ape_path = launch.child_path(options.path.as_deref());
+                                let mut command = Command::new(&launch.loader);
+                                command.args(launch.args(&argv[1..]));
+                                command
+                            }
+                            None => {
+                                let mut command = Command::new(&argv[0]);
+                                command.args(&argv[1..]);
+                                command
+                            }
                         }
-                        command
                     }
                 };
                 if let Some(cwd) = &self.config.cwd {
@@ -1333,6 +1361,9 @@ impl NativeProcess {
                 if let Some(env) = &self.config.env {
                     command.env_clear();
                     command.envs(env.iter().map(|(k, v)| (k, v)));
+                }
+                if let Some(path) = ape_path {
+                    command.env("PATH", path);
                 }
                 command
             }

@@ -1,5 +1,31 @@
 # Changelog
 
+## 4.10.16 — Actually Portable Executable launches
+
+- Runs Cosmopolitan Actually Portable Executables (APE) on hosts with no
+  `binfmt_misc` entry for them, such as stock NixOS, where `posix_spawn`
+  fails with `ENOEXEC` ("Exec format error"). This is fbuild's APE loader
+  contract, now owned here so every consumer shares one implementation.
+- Loader precedence: `RUNNING_PROCESS_APE_LOADER` (or `ApeOptions::loader`),
+  then the loader embedded in the image (Linux, new default `ape-loader`
+  feature), then `ape` on `PATH`, `/usr/bin/ape`, `/usr/local/bin/ape`, then
+  `/bin/sh`, then `sh` on `PATH`. The embedded loader is inflated, validated
+  as a static ELF for the host CPU, and installed content-addressed into the
+  first owner-only, exec-capable directory (`RUNNING_PROCESS_APE_CACHE_DIR`,
+  then the XDG cache, runtime and temporary directories), else a sealed
+  `memfd`. It needs no `sh`, coreutils, `gzip`, `PATH` or `$TMPDIR` in the
+  child.
+- `SpawnSpec`/`AsyncProcess` and argv `NativeProcess`es plan the loader before
+  spawning; `ape::command` / `ape::tokio_command` do the same for callers
+  that build their own command. Caller-built commands (`spawn_sync`,
+  `spawn_tokio`, bounded runs) are retried once after a refusal through
+  `execvp`'s POSIX `ENOEXEC` shell rule.
+- `ape::fork_guard` / `ape::exclusive_fork_guard`: a process-wide fork lock
+  (Go's `ForkLock`) held across this crate's spawns and while a loader is
+  written, so a concurrently forked child cannot hold it open (`ETXTBSY`).
+- CI links glibc targets with `--build-id=sha1`, as musl already was: soldr's
+  clang + lld emits no GNU build ID unless asked.
+
 ## 4.10.15 — ConPTY sidecar console-host tracking
 
 - Tracks `OpenConsole.exe` alongside `conhost.exe` when assigning ConPTY hosts
