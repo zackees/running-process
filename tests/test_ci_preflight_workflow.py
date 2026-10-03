@@ -68,5 +68,14 @@ class TestPreflightWorkflowContract(unittest.TestCase):
         self.assertIn("job-status: ${{ job.status }}", setup)
 
 
+    def test_test_domain_excludes_bulk_snapshots_without_serializing_nextest(self) -> None:
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+        setup = "\n".join(named_workflow_step(
+            workflow, "Set up soldr (toolchain + build cache)",
+        ))
+        self.assertIn("ci-tests: true", setup)
+        self.assertIn('NEXTEST_TEST_THREADS: "num-cpus"', workflow)
+
+
 if __name__ == "__main__":
     unittest.main()

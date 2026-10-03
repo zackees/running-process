@@ -74,6 +74,9 @@ jobs:
     env:
       RUST_BACKTRACE: "full"
       RUST_LIB_BACKTRACE: "full"
+      # ci-tests forbids bulk target snapshots; keep the existing parallel
+      # nextest execution rather than setup-soldr's conservative default.
+      NEXTEST_TEST_THREADS: "num-cpus"
     steps:
       - uses: actions/checkout@v4
 
@@ -103,6 +106,7 @@ jobs:
         uses: zackees/setup-soldr@v0
         with:
           cache: true
+          ci-tests: true
           save-cache: auto
           job-status: ${{ job.status }}
           save-cache-remote: ${{ github.ref == 'refs/heads/main' && 'auto' || 'false' }}
