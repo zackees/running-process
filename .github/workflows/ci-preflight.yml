@@ -104,6 +104,7 @@ jobs:
         with:
           cache: true
           save-cache: auto
+          job-status: ${{ job.status }}
           save-cache-remote: ${{ github.ref == 'refs/heads/main' && 'auto' || 'false' }}
           cache-key-suffix: ${{ inputs.label }}-${{ inputs.cache-key-suffix }}
           prebuild-deps: none
