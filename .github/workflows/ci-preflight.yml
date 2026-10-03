@@ -96,13 +96,15 @@ jobs:
             venv-${{ inputs.os }}-py3.11-
 
       # Toolchain from rust-toolchain.toml plus soldr's zccache-backed build
-      # cache (CACHE-025). `save-cache` is main-only (#1216): PR runs restore
-      # main's entries and never write a PR-scoped one.
+      # cache (CACHE-025). Remote saves remain main-only (#1216). Global
+      # auto keeps compatible local compiler artifacts reusable under act2;
+      # an explicit global false still disables every save (#1306).
       - name: Set up soldr (toolchain + build cache)
         uses: zackees/setup-soldr@v0
         with:
           cache: true
-          save-cache: ${{ github.ref == 'refs/heads/main' && 'auto' || 'false' }}
+          save-cache: auto
+          save-cache-remote: ${{ github.ref == 'refs/heads/main' && 'auto' || 'false' }}
           cache-key-suffix: ${{ inputs.label }}-${{ inputs.cache-key-suffix }}
           prebuild-deps: none
           # maturin runs `cargo` itself. The shims route it through soldr too,

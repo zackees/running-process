@@ -17,9 +17,7 @@ def named_workflow_step(workflow: str, name: str) -> list[str]:
         if re.fullmatch(rf"(?P<indent>\s*)-\s*name:\s*{re.escape(name)}\s*", line)
     ]
     if len(step_starts) != 1:
-        raise AssertionError(
-            f"expected one {name!r} workflow step, found {len(step_starts)}"
-        )
+        raise AssertionError(f"expected one {name!r} workflow step, found {len(step_starts)}")
 
     start = step_starts[0]
     indent = len(lines[start]) - len(lines[start].lstrip())
@@ -39,14 +37,16 @@ class TestPreflightWorkflowContract(unittest.TestCase):
         """CACHE-025: the build cache is setup-soldr's, never Swatinem's."""
         workflow = WORKFLOW.read_text(encoding="utf-8")
         self.assertNotIn("Swatinem/rust-cache", workflow)
-        setup = "\n".join(
-            named_workflow_step(workflow, "Set up soldr (toolchain + build cache)")
-        )
+        setup = "\n".join(named_workflow_step(workflow, "Set up soldr (toolchain + build cache)"))
         self.assertIn("uses: zackees/setup-soldr@v0", setup)
         self.assertIn("cache: true", setup)
         self.assertNotIn("cache: false", setup)
         self.assertIn(
-            "save-cache: ${{ github.ref == 'refs/heads/main' && 'auto' || 'false' }}",
+            "save-cache: auto",
+            setup,
+        )
+        self.assertIn(
+            "save-cache-remote: ${{ github.ref == 'refs/heads/main' && 'auto' || 'false' }}",
             setup,
         )
         # The workspace build has to go through soldr to reach the cache.

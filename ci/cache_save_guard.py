@@ -12,6 +12,9 @@ Rules, applied to every step in ``.github/workflows/*.yml``:
 * ``zackees/setup-soldr`` must leave ``save-cache`` unset (its ``auto``
   default never saves on ``pull_request``), or set it to ``auto``,
   ``false``, or an expression that names ``refs/heads/main``.
+  Its separate ``save-cache-remote`` permission follows the same restriction:
+  local ``auto`` retention must not allow an explicit remote PR writer.
+  Global ``false`` disables both writers regardless of the remote permission.
 * ``actions/cache`` (restore + save) is forbidden: use
   ``actions/cache/restore`` and a separate ``actions/cache/save``.
 * ``actions/cache/save`` must carry an ``if:`` gated the same way.
@@ -61,13 +64,19 @@ class Violation:
         return f"{shown}:{self.line}: {self.message}"
 
 
-def _step_bounds(lines: list[str], uses_index: int) -> tuple[int, int]:
+@dataclass(frozen=True)
+class StepBounds:
+    start: int
+    end: int
+
+
+def _step_bounds(lines: list[str], uses_index: int) -> StepBounds:
     """Return [start, end) of the YAML list item containing ``uses_index``."""
     start = uses_index
     while start >= 0 and not STEP_START.match(lines[start]):
         start -= 1
     if start < 0:
-        return uses_index, uses_index + 1
+        return StepBounds(uses_index, uses_index + 1)
     indent = len(STEP_START.match(lines[start]).group("indent"))
     end = start + 1
     while end < len(lines):
@@ -77,7 +86,7 @@ def _step_bounds(lines: list[str], uses_index: int) -> tuple[int, int]:
             if current <= indent:
                 break
         end += 1
-    return start, end
+    return StepBounds(start, end)
 
 
 def _field(step: list[str], name: str) -> str | None:
@@ -113,7 +122,9 @@ def check_text(path: Path, text: str) -> list[Violation]:
             "actions/cache/save",
         }:
             continue
-        start, end = _step_bounds(lines, index)
+        bounds = _step_bounds(lines, index)
+        start = bounds.start
+        end = bounds.end
         if _exempt(lines, start, end):
             continue
         step = lines[start:end]
@@ -137,6 +148,21 @@ def check_text(path: Path, text: str) -> list[Violation]:
                         "leave it unset or gate it on refs/heads/main",
                     )
                 )
+            remote_gate = _field(step, "save-cache-remote")
+            globally_disabled = gate is not None and gate.strip("'\"") == "false"
+            if (
+                not globally_disabled
+                and remote_gate is not None
+                and not SOLDR_SAVE_GATE.search(remote_gate)
+            ):
+                violations.append(
+                    Violation(
+                        path,
+                        index + 1,
+                        "zackees/setup-soldr save-cache-remote can save on pull_request; "
+                        "leave it unset, use auto/false, or gate it on refs/heads/main",
+                    )
+                )
         elif action == "actions/cache":
             violations.append(
                 Violation(
@@ -153,8 +179,7 @@ def check_text(path: Path, text: str) -> list[Violation]:
                     Violation(
                         path,
                         index + 1,
-                        "actions/cache/save needs "
-                        "`if: github.ref == 'refs/heads/main'`",
+                        "actions/cache/save needs `if: github.ref == 'refs/heads/main'`",
                     )
                 )
     return violations
@@ -177,8 +202,7 @@ def main(argv: list[str] | None = None) -> int:
         print(violation, file=sys.stderr)
     if violations:
         print(
-            f"cache_save_guard: {len(violations)} cache step(s) can save on "
-            "pull_request (#1216)",
+            f"cache_save_guard: {len(violations)} cache step(s) can save on pull_request (#1216)",
             file=sys.stderr,
         )
         return 1
