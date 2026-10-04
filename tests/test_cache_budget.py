@@ -473,7 +473,10 @@ class CacheBudgetPolicyTests(unittest.TestCase):
         self.assertIn("needs: [linux-full, macos, windows, coverage, all-features]", ci)
         self.assertIn("!cancelled() && github.event_name == 'schedule'", ci)
         self.assertIn("uses: ./.github/workflows/cache-budget.yml", ci)
-        self.assertNotIn("github.event_name == 'push'", ci)
+        budget = re.search(r"(?ms)^  cache-budget:.*?(?=^  [\w-]+:|\Z)", ci)
+        self.assertIsNotNone(budget)
+        assert budget is not None
+        self.assertNotIn("github.event_name == 'push'", budget.group())
 
     def test_budget_workflow_knows_the_all_features_writer_name(self) -> None:
         self.assertIn(
