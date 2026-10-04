@@ -5,6 +5,8 @@
 //! async twin of `session_relay::tests`, with the Hello negotiation added in
 //! front. Unix-first.
 
+#![cfg(unix)]
+
 use futures_util::{SinkExt, StreamExt};
 use prost::Message;
 use std::sync::{Arc, Condvar, Mutex};
