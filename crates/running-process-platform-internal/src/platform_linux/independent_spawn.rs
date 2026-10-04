@@ -101,7 +101,7 @@ pub fn spawn(
     spec.validate()?;
     send(
         &mut io::sink(),
-        &Message::Launch(spec.clone()),
+        &Message::Launch(Box::new(spec.clone())),
         deadline,
         cancelled,
     )?;
@@ -144,13 +144,13 @@ pub fn spawn(
     let mut stream = Channel::new(stream)?;
     send(
         &mut stream,
-        &Message::Launch(spec.clone()),
+        &Message::Launch(Box::new(spec.clone())),
         deadline,
         cancelled,
     )?;
     let pid = match receive(&mut stream, deadline, cancelled)? {
         Message::Started { pid } => pid,
-        Message::Failed { kind } => return Err(kind.into_io()),
+        Message::Failed { kind } => return Err(io::Error::from(kind)),
         _ => {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,

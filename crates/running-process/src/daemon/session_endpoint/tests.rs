@@ -4,6 +4,8 @@
 //! stdio back. The command is carried on the wire; this crosses a real IPC
 //! boundary through the production serve surface. Unix-first.
 
+#![cfg(unix)]
+
 use futures_util::{SinkExt, StreamExt};
 
 use super::serve_session_endpoint;

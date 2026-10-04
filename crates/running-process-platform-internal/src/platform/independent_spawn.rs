@@ -185,7 +185,7 @@ pub(crate) fn is_ready(readiness: &Readiness) -> io::Result<bool> {
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) enum Message {
-    Launch(LaunchSpec),
+    Launch(Box<LaunchSpec>),
     Started { pid: u32 },
     Commit,
     Committed,
@@ -201,17 +201,20 @@ pub(crate) enum FailureKind {
     LaunchFailed,
 }
 
-impl FailureKind {
-    pub(crate) fn into_io(self) -> io::Error {
-        let kind = match self {
-            Self::Unsupported => io::ErrorKind::Unsupported,
-            Self::PermissionDenied => io::ErrorKind::PermissionDenied,
-            Self::InvalidInput => io::ErrorKind::InvalidInput,
-            Self::NotFound => io::ErrorKind::NotFound,
-            Self::LaunchFailed => io::ErrorKind::Other,
+impl From<FailureKind> for io::Error {
+    fn from(failure: FailureKind) -> Self {
+        let kind = match failure {
+            FailureKind::Unsupported => io::ErrorKind::Unsupported,
+            FailureKind::PermissionDenied => io::ErrorKind::PermissionDenied,
+            FailureKind::InvalidInput => io::ErrorKind::InvalidInput,
+            FailureKind::NotFound => io::ErrorKind::NotFound,
+            FailureKind::LaunchFailed => io::ErrorKind::Other,
         };
         io::Error::new(kind, "independent target launch failed")
     }
+}
+
+impl FailureKind {
     fn from_io(error: &io::Error) -> Self {
         match error.kind() {
             io::ErrorKind::Unsupported => Self::Unsupported,
@@ -566,7 +569,7 @@ mod tests {
         };
         send(
             &mut channel,
-            &Message::Launch(spec),
+            &Message::Launch(Box::new(spec)),
             deadline,
             &AtomicBool::new(false),
         )
@@ -620,7 +623,7 @@ mod tests {
         let mut bytes = Vec::new();
         send(
             &mut bytes,
-            &Message::Launch(spec.clone()),
+            &Message::Launch(Box::new(spec.clone())),
             Instant::now() + LEASE,
             &AtomicBool::new(false),
         )

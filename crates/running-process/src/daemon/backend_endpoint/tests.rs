@@ -2,6 +2,8 @@
 //! mux dispatch serving both `BackendHandle` identity probes and `0x5350`
 //! SESSION compile sessions on one endpoint. Unix-first.
 
+#![cfg(unix)]
+
 use futures_util::{SinkExt, StreamExt};
 
 use super::{serve_backend_connection, serve_backend_endpoint};
