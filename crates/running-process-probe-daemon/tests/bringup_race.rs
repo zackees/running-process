@@ -61,8 +61,6 @@ fn beacon_answers_while_crash_store_waits_for_a_writer() {
             running_process_probe::env_vars::PROBE_SPOOL_DIR.name,
             dir.path().join("spool"),
         )
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
         .spawn()
         .expect("spawn winner");
 

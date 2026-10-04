@@ -222,6 +222,17 @@ def _head() -> str:
     return head.output.strip()
 
 
+def _static_checks() -> None:
+    for module in (
+        "ci.platform_boundary",
+        "ci.async_compliance_guard",
+        "ci.cache_save_guard",
+    ):
+        result = run_captured([sys.executable, "-m", module])
+        if result.returncode:
+            raise ValueError(f"{module} failed before engine submission:\n{result.output}")
+
+
 def command() -> list[str]:
     return [
         "bosn",
@@ -256,11 +267,7 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     try:
         head = _head()
-        boundary = run_captured([sys.executable, "-m", "ci.platform_boundary"])
-        if boundary.returncode:
-            raise ValueError(
-                f"platform boundary failed before engine submission:\n{boundary.output}"
-            )
+        _static_checks()
         daemon = run_captured(["docker", "info", "--format", "{{.OSType}} {{.Architecture}}"])
         error = fidelity_error(platform.machine(), daemon.output, daemon.returncode)
         if error:

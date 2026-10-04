@@ -137,6 +137,19 @@ class LocalGateProofTests(unittest.TestCase):
             self.assertEqual(1, local_gate.main([]))
         run.assert_called_once_with([local_gate.sys.executable, "-m", "ci.platform_boundary"])
 
+    def test_failed_async_check_prevents_engine_submission(self) -> None:
+        with (
+            patch.object(local_gate, "_head", return_value="a" * 40),
+            patch.object(
+                local_gate,
+                "run_captured",
+                side_effect=[local_gate.Captured(0, ""), local_gate.Captured(1, "stdio debt")],
+            ) as run,
+        ):
+            self.assertEqual(1, local_gate.main([]))
+        self.assertEqual(2, run.call_count)
+        run.assert_called_with([local_gate.sys.executable, "-m", "ci.async_compliance_guard"])
+
 
 if __name__ == "__main__":
     unittest.main()
