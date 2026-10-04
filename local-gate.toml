@@ -6,7 +6,7 @@
 [gate]
 run = ["uv", "run", "--no-project", "--python", "3.11", "python", "ci/local_gate.py"]
 verify = "ci.yml:ci-mode"
-mode = "shadow"
+mode = "enforce"
 
 [gate.lanes.linux-quick]
 run = ["uv", "run", "--no-project", "--python", "3.11", "python", "ci/local_gate.py"]
@@ -14,8 +14,9 @@ tools = ["bosn", "docker"]
 # No exclusions until input-reuse evidence proves them safe.
 
 [gate.trust]
-mode = "shadow"
+mode = "enforce"
 skip = ["ci.yml:linux-quick"]
 covered-by = { "ci.yml:linux-quick" = ["linux-quick"] }
 surfaces = ["ci/**", "lints/**", ".config/nextest.toml", "Cargo.lock", "rust-toolchain.toml", "bosn.toml"]
+full-labels = ["ci-full", "ci-integration"]
 audit-rate = 10
