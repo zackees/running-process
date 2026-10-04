@@ -184,6 +184,13 @@ pub(crate) fn is_ready(readiness: &Readiness) -> io::Result<bool> {
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(
+    windows,
+    expect(
+        clippy::large_enum_variant,
+        reason = "launch messages deliberately retain the owned spec inline"
+    )
+)]
 pub(crate) enum Message {
     Launch(LaunchSpec),
     Started { pid: u32 },
@@ -202,6 +209,7 @@ pub(crate) enum FailureKind {
 }
 
 impl FailureKind {
+    #[cfg(any(target_os = "linux", windows))]
     pub(crate) fn into_io(self) -> io::Error {
         let kind = match self {
             Self::Unsupported => io::ErrorKind::Unsupported,
