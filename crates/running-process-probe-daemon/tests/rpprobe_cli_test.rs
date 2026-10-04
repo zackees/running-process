@@ -49,6 +49,14 @@ impl Daemon {
         // daemon started first, resolve to `role=client`, and never publish a
         // discovery file of its own.
         let mut child = Command::new(binary)
+            .env(
+                running_process_probe::env_vars::PROBE_CRASH_DIR.name,
+                dir.path().join("crash-store"),
+            )
+            .env(
+                running_process_probe::env_vars::PROBE_SPOOL_DIR.name,
+                dir.path().join("crash-spool"),
+            )
             .arg("--runtime-dir")
             .arg(dir.path())
             .arg("--beacon-port")

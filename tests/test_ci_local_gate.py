@@ -6,6 +6,7 @@ import json
 import unittest
 from dataclasses import dataclass
 from pathlib import Path
+from unittest.mock import patch
 
 from ci import local_gate
 
@@ -125,6 +126,16 @@ class LocalGateProofTests(unittest.TestCase):
         )
         for case in cases:
             self.assertIsNotNone(local_gate.fidelity_error(case.host, case.daemon, case.code))
+
+    def test_failed_boundary_check_prevents_engine_submission(self) -> None:
+        with (
+            patch.object(local_gate, "_head", return_value="a" * 40),
+            patch.object(
+                local_gate, "run_captured", return_value=local_gate.Captured(1, "ledger drift")
+            ) as run,
+        ):
+            self.assertEqual(1, local_gate.main([]))
+        run.assert_called_once_with([local_gate.sys.executable, "-m", "ci.platform_boundary"])
 
 
 if __name__ == "__main__":

@@ -12,6 +12,7 @@ import json
 import platform
 import re
 import subprocess
+import sys
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -255,6 +256,11 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     try:
         head = _head()
+        boundary = run_captured([sys.executable, "-m", "ci.platform_boundary"])
+        if boundary.returncode:
+            raise ValueError(
+                f"platform boundary failed before engine submission:\n{boundary.output}"
+            )
         daemon = run_captured(["docker", "info", "--format", "{{.OSType}} {{.Architecture}}"])
         error = fidelity_error(platform.machine(), daemon.output, daemon.returncode)
         if error:

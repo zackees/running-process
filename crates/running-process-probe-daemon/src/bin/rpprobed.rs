@@ -239,14 +239,6 @@ fn run_as_daemon(
 
     let discovery_target = discovery_dir(args.runtime_dir.as_deref());
 
-    // Start before accepting registrations. A process can crash after calling
-    // install but before its background registration completes; its fixed
-    // spool must still be consumed by the daemon that appears later.
-    let _crash_watcher = running_process_probe_daemon::crash_store::spawn_watcher(
-        running_process_probe::crash::spool::spool_dir(),
-        running_process_probe_daemon::crash_store::default_artifacts_dir(),
-    )?;
-
     // Beacon accept loop: answer identity handshakes so clients can find us
     // without reading the filesystem.
     //
@@ -267,6 +259,14 @@ fn run_as_daemon(
                 }
             }
         })?;
+
+    // Opening SQLite can wait for another writer. Serve identity handshakes
+    // first so that storage contention cannot turn the elected daemon into a
+    // stranger, while ingestion still starts before accepting registrations.
+    let _crash_watcher = running_process_probe_daemon::crash_store::spawn_watcher(
+        running_process_probe::crash::spool::spool_dir(),
+        running_process_probe_daemon::crash_store::default_artifacts_dir(),
+    )?;
 
     println!("role=daemon pid={} beacon={port}", info.daemon_pid);
     let _ = std::io::stdout().flush();

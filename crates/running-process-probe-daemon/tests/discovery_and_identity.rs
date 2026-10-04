@@ -13,6 +13,14 @@ fn free_ephemeral_port() -> u16 {
 
 fn run_elect(port: u16, dir: &std::path::Path) -> std::process::Output {
     Command::new(env!("CARGO_BIN_EXE_rpprobed"))
+        .env(
+            running_process_probe::env_vars::PROBE_CRASH_DIR.name,
+            dir.join("crash-store"),
+        )
+        .env(
+            running_process_probe::env_vars::PROBE_SPOOL_DIR.name,
+            dir.join("crash-spool"),
+        )
         .args([
             "--elect-then-exit",
             "--beacon-port",
