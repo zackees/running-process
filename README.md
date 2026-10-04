@@ -587,35 +587,52 @@ For status-preserving one-shot process capture on that substrate, see
 
 `./test` runs the Rust tests, rebuilds the native extension with the unoptimized `dev` profile, runs the non-live Python tests, and then runs the `@pytest.mark.live` coverage that exercises real OS process and signal behavior.
 
-### Repository Dylint
+### Source-bound Linux quick gate
 
-The native Linux x86 consolidated preflight runs the repository-owned
-`running_process_env_literal` lint. It rejects direct string literals for
-`RUNNING_PROCESS_*` environment controls in `std::env` calls, keeping broker
-escape hatches and test seams tied to their canonical constants. The lint
-library, `cargo-dylint`, and `dylint-link` are pinned to Dylint `6.0.1`; the
-library and CI both use `nightly-2026-04-16`.
-
-To run the same gate locally:
+Before pushing, commit your changes and run the pinned attesting gate from a
+clean worktree on a native Linux x64 host with Docker and published Bosn
+0.1.12 or newer available:
 
 ```bash
-soldr rustup toolchain install nightly-2026-04-16 --profile minimal \
-  --component rustc-dev --component llvm-tools-preview
-uvx soldr cargo install cargo-dylint@6.0.1 dylint-link@6.0.1 --locked
-(
-  cd lints/running-process-env-literal
-  CARGO_TARGET_DIR=../../target/dylint RUSTUP_TOOLCHAIN=nightly-2026-04-16 \
-    uvx soldr cargo test --locked
-)
-CARGO_TARGET_DIR=target/dylint RUSTUP_TOOLCHAIN=nightly-2026-04-16 \
-  uvx soldr cargo dylint --all --workspace
+uvx --from git+https://github.com/zackees/ci.yml@86b63937960d00655f7ef3752ef6f15b6b06f35b ci-lint local-gate run
 ```
 
-The first check exercises the negative UI fixture and proves the lint rejects
-a literal control name. The second checks the workspace. CI gives the exact
-tool binaries and nightly target directory dedicated persistent caches and
-runs the gate once, rather than adding a cold Dylint build to every platform
-job.
+The helper runs the existing Linux quick workflow through Bosn's released
+act2 engine in isolation. It checks the exact committed source and completion
+of every required build, wheel, lint, Dylint fixture, contract, Rust/Python
+test and performance step before adding source-bound commit attestations.
+Push the stamped commit. An unchanged attested head can reuse its proof;
+changed inputs must pass the declared gate.
+
+PR verification enforces proof and uses the base branch's trust policy to
+skip covered remote quick checks. One in ten otherwise trusted heads still
+runs remotely for audit. The `ci-integration` and `ci-full` selections retain
+their additional remote coverage. Linux proof covers the declared Linux
+quick lane; optional native Windows/macOS and full selections retain their
+own checks. Push, schedule and dispatch runs continue to execute remotely.
+
+### Repository Dylint
+
+The Linux quick job runs both repository-owned lints:
+`running_process_env_literal` rejects direct string literals for
+`RUNNING_PROCESS_*` controls in `std::env` calls, and
+`running_process_platform_boundary` checks the platform boundary. Both
+negative-fixture suites and both workspace lint passes are required.
+
+CI uses setup-soldr's managed prebuilt `cargo-dylint` and `dylint-link` 6.0.3
+with `nightly-2026-05-28`; the lint crates retain their locked 6.0.1 library
+dependencies. Driver fallback is disabled. The declared `cfg(all())`
+`dylint-link` is preserved with `SOLDR_LINKER=default` while
+[soldr#3483](https://github.com/zackees/soldr/issues/3483) remains open.
+The gate caches the managed foundation and reusable compiler units, while
+fixture/workspace target trees and Dylint output caches are disabled. Cargo
+registry caching is disabled pending the incomplete-source restore fix in
+[setup-soldr#492](https://github.com/zackees/setup-soldr/issues/492).
+
+The local helper `ci/dylint_gate.py` uses the same two managed workspace
+commands. It reports missing tools/nightly with preparation instructions;
+`RUNNING_PROCESS_REQUIRE_DYLINT=1` makes missing preparation a failure.
+The complete isolated gate above also exercises both fixture suites.
 
 On local developer machines, `./test` also runs the Linux Docker preflight so Windows and macOS development catches Linux wheel, lint, and non-live pytest regressions before push. GitHub-hosted Actions skip that Docker-only preflight and run the native platform suite directly.
 
