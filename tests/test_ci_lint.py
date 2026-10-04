@@ -28,9 +28,11 @@ def test_dylint_job_uses_bash_so_windows_can_run_its_posix_steps() -> None:
     )
     job = reusable.split("\n  dylint:\n", 1)[1].split("\n  lint-gates:\n", 1)[0]
     assert "defaults:\n      run:\n        shell: bash" in job
-    # Windows binaries carry an .exe suffix; the cache path must match them.
-    assert "cargo-dylint*" in job
-    assert "dylint-link*" in job
+    # Managed setup resolves platform-specific binaries, including Windows
+    # .exe suffixes; the repository no longer copies a manual tool cache.
+    assert "uses: zackees/setup-soldr@v0" in job
+    assert 'cargo-dylint-version: "6.0.3"' in job
+    assert 'dylint-link-version: "6.0.3"' in job
 
 
 def test_aggregate_check_fails_when_a_requested_dylint_did_not_pass() -> None:
