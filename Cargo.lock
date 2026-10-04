@@ -1348,9 +1348,9 @@ dependencies = [
 
 [[package]]
 name = "mimalloc-pprof"
-version = "0.9.0"
+version = "0.9.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "557d56814ff72f313ea6759a5fb79d9484b50419bcb956983f741b6c85a68155"
+checksum = "05d30b36d87ca14bd04fec54438531e7ef88ee0f28b34d75a37ddc98ac3fa93d"
 dependencies = [
  "cc",
 ]
