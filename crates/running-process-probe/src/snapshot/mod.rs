@@ -271,7 +271,7 @@ pub(crate) fn capture_and_resolve_interruptible(
         unwind::resolve_frames(&mut snapshot, &modules);
     }
     #[cfg(any(target_os = "linux", target_os = "macos"))]
-    if !unwind::resolve_frames_interruptible(&mut snapshot, stop)? {
+    if !unwind::unix::resolve_frames_interruptible(&mut snapshot, stop)? {
         return Ok(None);
     }
     if stop.load(Ordering::Acquire) {
