@@ -1,0 +1,14 @@
+# Only the actual native Linux quick selection can prove these gates.
+# Full/opt-in Windows, macOS, coverage and integration selections remain remote.
+# Shadow mode observes attestations; every remote check still executes.
+version: 1
+gates:
+  rust/all/fmt: {lane: linux-quick, fidelity: native}
+  python/all/static: {lane: linux-quick, fidelity: native}
+  rust/x86_64-unknown-linux-gnu/check: {lane: linux-quick, fidelity: native}
+  rust/x86_64-unknown-linux-gnu/dylint: {lane: linux-quick, fidelity: native}
+  rust/x86_64-unknown-linux-gnu/test: {lane: linux-quick, fidelity: native}
+  python/linux-x64/test: {lane: linux-quick, fidelity: native}
+  general/linux-x64/perf: {lane: linux-quick, fidelity: native}
+jobs:
+  ci.yml:linux-quick: [rust/all/fmt, python/all/static, rust/x86_64-unknown-linux-gnu/check, rust/x86_64-unknown-linux-gnu/dylint, rust/x86_64-unknown-linux-gnu/test, python/linux-x64/test, general/linux-x64/perf]

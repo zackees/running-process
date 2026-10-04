@@ -28,6 +28,59 @@ fn role_line(stdout: &str) -> String {
         .to_string()
 }
 
+/// A busy crash database must not turn the elected daemon into a stranger.
+#[test]
+fn beacon_answers_while_crash_store_waits_for_a_writer() {
+    use running_process_probe_daemon::bringup::identity_handshake;
+    use running_process_probe_daemon::crash_store::CrashStore;
+    use std::net::TcpStream;
+    use std::time::{Duration, Instant};
+
+    let dir = tempfile::tempdir().expect("private fixture root");
+    let database = dir.path().join("crashes.sqlite3");
+    drop(CrashStore::open(&database, &dir.path().join("crashes-v2")).expect("initialize store"));
+    let writer = rusqlite::Connection::open(&database).expect("writer connection");
+    writer
+        .execute_batch("BEGIN IMMEDIATE")
+        .expect("hold writer");
+
+    let port = free_ephemeral_port();
+    let mut winner = Command::new(env!("CARGO_BIN_EXE_rpprobed"))
+        .args([
+            "--elect-then-exit",
+            "--beacon-port",
+            &port.to_string(),
+            "--runtime-dir",
+        ])
+        .arg(dir.path())
+        .env(
+            running_process_probe::env_vars::PROBE_CRASH_DIR.name,
+            dir.path(),
+        )
+        .env(
+            running_process_probe::env_vars::PROBE_SPOOL_DIR.name,
+            dir.path().join("spool"),
+        )
+        .spawn()
+        .expect("spawn winner");
+
+    let deadline = Instant::now() + Duration::from_secs(2);
+    let identity = loop {
+        match TcpStream::connect(("127.0.0.1", port)) {
+            Ok(mut peer) => break identity_handshake(&mut peer),
+            Err(error) if Instant::now() >= deadline => break Err(error),
+            Err(_) => std::thread::sleep(Duration::from_millis(10)),
+        }
+    };
+    writer.execute_batch("ROLLBACK").expect("release writer");
+    let _ = winner.kill();
+    let _ = winner.wait();
+    assert!(
+        identity.is_ok(),
+        "elected beacon must answer while storage is busy: {identity:?}"
+    );
+}
+
 #[test]
 fn exactly_one_process_wins_the_election() {
     const RACERS: usize = 8;
@@ -40,6 +93,14 @@ fn exactly_one_process_wins_the_election() {
     let kids: Vec<_> = (0..RACERS)
         .map(|_| {
             Command::new(bin)
+                .env(
+                    running_process_probe::env_vars::PROBE_CRASH_DIR.name,
+                    dir.path().join("crash-store"),
+                )
+                .env(
+                    running_process_probe::env_vars::PROBE_SPOOL_DIR.name,
+                    dir.path().join("crash-spool"),
+                )
                 .args([
                     "--elect-then-exit",
                     "--beacon-port",
@@ -99,6 +160,14 @@ fn election_winner_publishes_discovery_file() {
     let mut out = None;
     for _ in 0..12 {
         let o = Command::new(bin)
+            .env(
+                running_process_probe::env_vars::PROBE_CRASH_DIR.name,
+                dir.path().join("crash-store"),
+            )
+            .env(
+                running_process_probe::env_vars::PROBE_SPOOL_DIR.name,
+                dir.path().join("crash-spool"),
+            )
             .args([
                 "--elect-then-exit",
                 "--beacon-port",

@@ -32,6 +32,7 @@ lints/running-process-env-literal/.cargo/*
 !lints/running-process-env-literal/.cargo/config.toml
 .rustup/
 .loop/
+.ci-lint/
 .claude/
 .extern-repos/
 src/running_process/assets/daemon-trampoline

@@ -1,0 +1,9 @@
+# GATE-012: advisory reviews remain available on demand; app checks never gate CI.
+reviews:
+  auto_review:
+    enabled: false
+  commit_status: false
+  fail_commit_status: false
+  request_changes_workflow: false
+chat:
+  auto_reply: false

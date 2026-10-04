@@ -943,7 +943,7 @@ fn with_platform_fields<R>(
 fn sampler_loop(shared: Arc<Shared>) {
     while !shared.stop.load(Ordering::Acquire) {
         if !shared.reading.load(Ordering::Acquire) {
-            let sample = capture_sample();
+            let sample = capture_sample(&shared.stop);
             // Recheck after the allocating capture: the callback may have
             // started while capture was in progress.
             if let Some(sample) = sample {
@@ -978,17 +978,21 @@ fn sampler_loop(shared: Arc<Shared>) {
     any(windows, target_os = "linux", target_os = "macos"),
     any(target_arch = "x86_64", target_arch = "aarch64")
 ))]
-fn capture_sample() -> Option<CrashSample> {
+fn capture_sample(stop: &AtomicBool) -> Option<CrashSample> {
     use crate::snapshot::attribute::attribute;
-    use crate::snapshot::modules::enumerate_modules;
-    use crate::snapshot::{capture_and_resolve, SnapshotConfig};
+    use crate::snapshot::modules::enumerate_modules_interruptible;
+    use crate::snapshot::{capture_and_resolve_interruptible, SnapshotConfig};
 
-    let Ok(snapshot) = capture_and_resolve(&SnapshotConfig::default()) else {
+    let Ok(Some(snapshot)) = capture_and_resolve_interruptible(&SnapshotConfig::default(), stop)
+    else {
         return None;
     };
-    let Ok(loaded) = enumerate_modules() else {
+    let Ok(Some(loaded)) = enumerate_modules_interruptible(stop) else {
         return None;
     };
+    if stop.load(Ordering::Acquire) {
+        return None;
+    }
     let attributed = attribute(&snapshot, &loaded);
     Some(CrashSample {
         modules: attributed
@@ -1020,7 +1024,7 @@ fn capture_sample() -> Option<CrashSample> {
     any(windows, target_os = "linux", target_os = "macos"),
     any(target_arch = "x86_64", target_arch = "aarch64")
 )))]
-fn capture_sample() -> Option<CrashSample> {
+fn capture_sample(_stop: &AtomicBool) -> Option<CrashSample> {
     None
 }
 
