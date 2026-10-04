@@ -62,14 +62,15 @@ def test_local_lint_runs_both_dylint_libraries_in_ci_order() -> None:
     first, second = dylint_gate.commands()
     assert first[-2:] == ["--all", "--workspace"]
     assert "running-process-platform-boundary" in second
-    prefix = ["rustup", "run", dylint_gate.NIGHTLY, "cargo", "dylint"]
-    assert first[:5] == prefix
-    assert second[:5] == prefix
+    prefix = ["soldr", "dylint"]
+    assert first[:2] == prefix
+    assert second[:2] == prefix
+    assert "--all" in second
     reusable = (ci_lint.ROOT / ".github" / "workflows" / "ci-preflight.yml").read_text(
         encoding="utf-8"
     )
     assert dylint_gate.NIGHTLY in reusable
-    assert f"cargo-dylint@{dylint_gate.DYLINT_VERSION}" in reusable
+    assert f'cargo-dylint-version: "{dylint_gate.DYLINT_VERSION}"' in reusable
 
 
 def test_dylint_gate_skips_without_toolchain_and_fails_when_required(
