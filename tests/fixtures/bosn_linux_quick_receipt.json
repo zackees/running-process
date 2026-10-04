@@ -1,0 +1,160 @@
+{
+  "schema_version": 1,
+  "workspace": "/work/repo",
+  "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "dirty": null,
+  "state": "done",
+  "conclusion": "success",
+  "exit_code": 0,
+  "engine": "act",
+  "event": "pull_request",
+  "workflow": ".github/workflows/ci.yml",
+  "job": "linux-quick",
+  "mode": "minimal",
+  "act_version": "0.2.89-act2.3",
+  "tree": {
+    "groups": [
+      {
+        "jobs": [
+          {
+            "job_id": "dylint",
+            "status": "completed",
+            "conclusion": "success",
+            "sections": [
+              {
+                "name": "Dylint negative fixture",
+                "stage": "Main",
+                "status": "completed",
+                "conclusion": "success"
+              },
+              {
+                "name": "Dylint platform-boundary fixture",
+                "stage": "Main",
+                "status": "completed",
+                "conclusion": "success"
+              },
+              {
+                "name": "Dylint workspace gate",
+                "stage": "Main",
+                "status": "completed",
+                "conclusion": "success"
+              }
+            ]
+          },
+          {
+            "job_id": "lint-gates",
+            "status": "completed",
+            "conclusion": "success",
+            "sections": [
+              {
+                "name": "Require preflight and requested Dylint to have passed",
+                "stage": "Main",
+                "status": "completed",
+                "conclusion": "success"
+              }
+            ]
+          },
+          {
+            "job_id": "preflight",
+            "status": "completed",
+            "conclusion": "success",
+            "sections": [
+              {
+                "name": "cargo build (workspace + all-targets, debug, --features client)",
+                "stage": "Main",
+                "status": "completed",
+                "conclusion": "success"
+              },
+              {
+                "name": "Dev wheel build",
+                "stage": "Main",
+                "status": "completed",
+                "conclusion": "success"
+              },
+              {
+                "name": "Lint",
+                "stage": "Main",
+                "status": "completed",
+                "conclusion": "success"
+              },
+              {
+                "name": "Record kernel substrate timing",
+                "stage": "Main",
+                "status": "completed",
+                "conclusion": "success"
+              },
+              {
+                "name": "Async semantic capture contract (kernel substrate)",
+                "stage": "Main",
+                "status": "completed",
+                "conclusion": "success"
+              },
+              {
+                "name": "Direct backend identity contract",
+                "stage": "Main",
+                "status": "completed",
+                "conclusion": "success"
+              },
+              {
+                "name": "Frame v1 codec contract",
+                "stage": "Main",
+                "status": "completed",
+                "conclusion": "success"
+              },
+              {
+                "name": "Daemon registration contract",
+                "stage": "Main",
+                "status": "completed",
+                "conclusion": "success"
+              },
+              {
+                "name": "Daemon registration v2 writer contract",
+                "stage": "Main",
+                "status": "completed",
+                "conclusion": "success"
+              },
+              {
+                "name": "Terminal graphics capability matrix",
+                "stage": "Main",
+                "status": "completed",
+                "conclusion": "success"
+              },
+              {
+                "name": "Report terminal graphics capability matrix",
+                "stage": "Main",
+                "status": "completed",
+                "conclusion": "success"
+              },
+              {
+                "name": "Unit Tests",
+                "stage": "Main",
+                "status": "completed",
+                "conclusion": "success"
+              },
+              {
+                "name": "Broker Hello perf guard",
+                "stage": "Main",
+                "status": "completed",
+                "conclusion": "success"
+              }
+            ]
+          },
+          {
+            "job_id": "ci-mode",
+            "status": "completed",
+            "conclusion": "success",
+            "sections": [
+              {
+                "name": "Local gate attestation",
+                "stage": "Main",
+                "status": "completed",
+                "conclusion": "success"
+              }
+            ]
+          }
+        ]
+      }
+    ],
+    "malformed_lines": 0
+  }
+}

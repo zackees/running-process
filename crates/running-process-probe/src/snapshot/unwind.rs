@@ -435,6 +435,12 @@ pub fn resolve_frames(snapshot: &mut Snapshot, modules: &[LoadedModule]) {
 /// mapped in this process. Object parsing happens only after capture, when
 /// every sibling is running again.
 #[cfg(any(target_os = "linux", target_os = "macos"))]
+fn read_unwind_image(path: &str, stop: &AtomicBool) -> Option<Vec<u8>> {
+    let reader = std::fs::File::open(path).ok()?;
+    super::cancel::read_to_end(reader, stop, super::modules::MAX_MODULE_IMAGE_BYTES as usize).ok()?
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn build_unix_unwinder(
     modules: &[LoadedModule],
     stop: &AtomicBool,
@@ -470,14 +476,7 @@ fn build_unix_unwinder(
         let Some(path) = module.path.as_deref() else {
             continue;
         };
-        let Ok(reader) = std::fs::File::open(path) else {
-            continue;
-        };
-        let Ok(Some(data)) = super::cancel::read_to_end(
-            reader,
-            stop,
-            super::modules::MAX_MODULE_IMAGE_BYTES as usize,
-        ) else {
+        let Some(data) = read_unwind_image(path, stop) else {
             if stop.load(Ordering::Acquire) {
                 return None;
             }

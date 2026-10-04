@@ -33,7 +33,36 @@ permissions:
   contents: read
 
 jobs:
+  # Read the exact PR head and the base's trust policy. Shadow mode reports
+  # proof without skipping remote coverage until a real pilot is validated.
+  ci-mode:
+    name: CI mode
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      trusted: ${{ steps.gate.outputs.trusted }}
+      skip_linux-quick: ${{ steps.gate.outputs.skip_linux-quick }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          repository: zackees/ci.yml
+          ref: 86b63937960d00655f7ef3752ef6f15b6b06f35b
+          path: .ci-lint
+          sparse-checkout: ci_lint
+          persist-credentials: false
+      - name: Local gate attestation
+        id: gate
+        run: PYTHONPATH=.ci-lint python3 -m ci_lint local-gate verify --repo . --trust --github-output
+
   docker-fixture-build:
+    needs: [ci-mode]
     name: docker-fixture-build (${{ matrix.target }})
     # Soldr's musl compiler catalogue currently runs on x86. Cross-build here;
     # the following job must execute each binary on its native architecture.
@@ -74,7 +103,7 @@ jobs:
           retention-days: 3
   docker-broker:
     name: docker-broker (${{ matrix.target }})
-    needs: docker-fixture-build
+    needs: [ci-mode, docker-fixture-build]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 5
     strategy:
@@ -99,6 +128,7 @@ jobs:
       - name: Verify native broker accounting without systemd
         run: uv run --no-project --module ci.independent_broker_docker --run-only "${{ runner.temp }}/fixture"
   scheduler:
+    needs: [ci-mode]
     name: scheduler (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     strategy:

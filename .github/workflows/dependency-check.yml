@@ -41,7 +41,36 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  # Read the exact PR head and the base's trust policy. Shadow mode reports
+  # proof without skipping remote coverage until a real pilot is validated.
+  ci-mode:
+    name: CI mode
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      trusted: ${{ steps.gate.outputs.trusted }}
+      skip_linux-quick: ${{ steps.gate.outputs.skip_linux-quick }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          repository: zackees/ci.yml
+          ref: 86b63937960d00655f7ef3752ef6f15b6b06f35b
+          path: .ci-lint
+          sparse-checkout: ci_lint
+          persist-credentials: false
+      - name: Local gate attestation
+        id: gate
+        run: PYTHONPATH=.ci-lint python3 -m ci_lint local-gate verify --repo . --trust --github-output
+
   conpty-lint:
+    needs: [ci-mode]
     name: ConPTY — lint vendored PE shape (all arches)
     runs-on: ubuntu-latest
     steps:
@@ -113,6 +142,7 @@ jobs:
           echo "PASS: all vendored ConPTY binaries are PE-valid for their expected arch"
 
   conpty-drift:
+    needs: [ci-mode]
     name: ConPTY — drift check vs pinned NuGet
     runs-on: ubuntu-latest
     steps:
