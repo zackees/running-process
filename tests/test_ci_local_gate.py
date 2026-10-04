@@ -40,6 +40,22 @@ class LocalGateProofTests(unittest.TestCase):
     def test_complete_native_receipt_proves_the_selected_quick_gate(self) -> None:
         self.assertIsNone(self.error())
 
+    def test_local_execution_uses_quick_dispatch_before_attesting(self) -> None:
+        command = local_gate.command()
+        self.assertIn("--event", command)
+        self.assertEqual(command[command.index("--event") + 1], "workflow_dispatch")
+        self.assertIn("full=false", command)
+        self.document["event"] = "workflow_dispatch"
+        self.assertIsNone(self.error())
+
+    def test_integration_label_preserves_additional_remote_coverage(self) -> None:
+        trust = (local_gate.ROOT / "local-gate.toml").read_text().split("[gate.trust]", 1)[1]
+        labels = next(line for line in trust.splitlines() if line.startswith("full-labels ="))
+        self.assertIn("ci-integration", json.loads(labels.split("=", 1)[1]))
+        workflow = (local_gate.ROOT / local_gate.WORKFLOW).read_text()
+        self.assertIn("integration-test:", workflow)
+        self.assertIn("'ci-integration'", workflow)
+
     def test_wrong_source_and_selection_never_prove_this_gate(self) -> None:
         cases = (
             FieldCase("workspace", ("/work/another-repo", "relative/repo")),
@@ -49,7 +65,7 @@ class LocalGateProofTests(unittest.TestCase):
             FieldCase("conclusion", ("failure", "cancelled", None)),
             FieldCase("exit_code", (1, None, False)),
             FieldCase("engine", ("docker", None)),
-            FieldCase("event", ("push", "workflow_dispatch")),
+            FieldCase("event", ("push", "pull_request")),
             FieldCase("workflow", (".github/workflows/ci-linux.yml",)),
             FieldCase("job", (None, "linux-full")),
             FieldCase("mode", ("full", None)),

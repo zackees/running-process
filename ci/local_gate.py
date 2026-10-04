@@ -3,6 +3,8 @@
 This helper is run by the attesting wrapper, once local-gate.toml is wired.
 It never runs product tests on the developer host and never stamps a commit.
 Only a clean native Linux x64 run with every required step completed can pass.
+The existing quick dispatch runs before PR attestation verification can enforce
+the proof this local execution is about to produce.
 """
 
 from __future__ import annotations
@@ -149,7 +151,7 @@ def _parse_proof(output: str) -> Proof:
         "state": "done",
         "conclusion": "success",
         "engine": "act",
-        "event": "pull_request",
+        "event": "workflow_dispatch",
         "workflow": WORKFLOW,
         "job": SELECTED_JOB,
         "mode": "minimal",
@@ -244,8 +246,10 @@ def command() -> list[str]:
         WORKFLOW,
         "--job",
         SELECTED_JOB,
-        "--trigger",
-        "pr",
+        "--event",
+        "workflow_dispatch",
+        "--input",
+        "full=false",
         "--mode",
         "minimal",
         "--timeout-secs",

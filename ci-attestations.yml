@@ -1,6 +1,6 @@
 # Only the actual native Linux quick selection can prove these gates.
 # Full/opt-in Windows, macOS, coverage and integration selections remain remote.
-# Shadow mode observes attestations; every remote check still executes.
+# Enforced proof skips the covered quick job; audit samples still run remotely.
 version: 1
 gates:
   rust/all/fmt: {lane: linux-quick, fidelity: native}

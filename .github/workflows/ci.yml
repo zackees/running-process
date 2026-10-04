@@ -27,8 +27,8 @@ concurrency:
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
-  # Read the exact PR head and the base's trust policy. Shadow mode reports
-  # proof without skipping remote coverage until a real pilot is validated.
+  # Read the exact PR head and the base's trust policy. Covered quick checks
+  # reuse a verified local proof; audit samples retain remote execution.
   ci-mode:
     name: CI mode
     runs-on: ubuntu-latest

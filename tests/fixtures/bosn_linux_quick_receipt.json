@@ -7,7 +7,7 @@
   "conclusion": "success",
   "exit_code": 0,
   "engine": "act",
-  "event": "pull_request",
+  "event": "workflow_dispatch",
   "workflow": ".github/workflows/ci.yml",
   "job": "linux-quick",
   "mode": "minimal",
