@@ -28,9 +28,11 @@ def test_dylint_job_uses_bash_so_windows_can_run_its_posix_steps() -> None:
     )
     job = reusable.split("\n  dylint:\n", 1)[1].split("\n  lint-gates:\n", 1)[0]
     assert "defaults:\n      run:\n        shell: bash" in job
-    # Windows binaries carry an .exe suffix; the cache path must match them.
-    assert "cargo-dylint*" in job
-    assert "dylint-link*" in job
+    # Managed setup resolves platform-specific binaries, including Windows
+    # .exe suffixes; the repository no longer copies a manual tool cache.
+    assert "uses: zackees/setup-soldr@v0" in job
+    assert 'cargo-dylint-version: "6.0.3"' in job
+    assert 'dylint-link-version: "6.0.3"' in job
 
 
 def test_aggregate_check_fails_when_a_requested_dylint_did_not_pass() -> None:
@@ -62,14 +64,15 @@ def test_local_lint_runs_both_dylint_libraries_in_ci_order() -> None:
     first, second = dylint_gate.commands()
     assert first[-2:] == ["--all", "--workspace"]
     assert "running-process-platform-boundary" in second
-    prefix = ["rustup", "run", dylint_gate.NIGHTLY, "cargo", "dylint"]
-    assert first[:5] == prefix
-    assert second[:5] == prefix
+    prefix = ["soldr", "dylint"]
+    assert first[:2] == prefix
+    assert second[:2] == prefix
+    assert "--all" in second
     reusable = (ci_lint.ROOT / ".github" / "workflows" / "ci-preflight.yml").read_text(
         encoding="utf-8"
     )
     assert dylint_gate.NIGHTLY in reusable
-    assert f"cargo-dylint@{dylint_gate.DYLINT_VERSION}" in reusable
+    assert f'cargo-dylint-version: "{dylint_gate.DYLINT_VERSION}"' in reusable
 
 
 def test_dylint_gate_skips_without_toolchain_and_fails_when_required(

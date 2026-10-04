@@ -340,84 +340,60 @@ jobs:
           if-no-files-found: warn
 
   # Dylint runs in its own job, in parallel with preflight: it builds into its
-  # own cached target dir and shares nothing with the workspace build, so it
-  # only needs to be off the preflight critical path (~40 s).
+  # own ephemeral target dir and a separate compiler-unit cache family.
+  # Keep it off the preflight critical path without saving linked fixtures.
   dylint:
     name: dylint (${{ inputs.label }})
     if: ${{ inputs.dylint }}
     runs-on: ${{ inputs.os }}
     timeout-minutes: 30
-    # The steps below use POSIX quoting (`"$CARGO_BIN"`), which PowerShell -- the
-    # default shell on Windows runners -- would treat as a string, not a command.
+    env:
+      SOLDR_DYLINT_DRIVER_FALLBACK: "off"
+      # The lint crates select dylint-link through cfg(all()). Soldr's
+      # automatic linker only detects exact-triple Cargo config entries;
+      # keep the declared linker so it emits Dylint's qualified library name.
+      SOLDR_LINKER: "default"
+    # Keep fixture and managed-tool commands consistent across existing lanes.
     defaults:
       run:
         shell: bash
     steps:
       - uses: actions/checkout@v4
 
-      # Only needed to build the Dylint tools on a tools-cache miss.
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@1.95.0
-
-      # Dylint runs on Linux x86 for every PR, and on macOS/Windows x86 only
-      # in their opt-in tiers (the env-literal lint is a late lint, so it
-      # needs each host's own module graph; the platform-boundary lint is
-      # pre-expansion and already sees every OS branch from Linux). Its
-      # nightly artifacts use a dedicated persistent cache so they cannot mix with the stable
-      # workspace build or impose a cold rebuild on every platform lane.
-      - name: Install Dylint nightly
-        if: ${{ inputs.dylint }}
-        uses: dtolnay/rust-toolchain@nightly
-        with:
-          toolchain: "nightly-2026-04-16"
-          components: llvm-tools-preview, rustc-dev
-
-      - name: Restore Dylint 6.0.1 tools
-        if: ${{ inputs.dylint }}
-        id: dylint-tools
-        uses: actions/cache/restore@v4
-        with:
-          path: |
-            ~/.cargo/bin/cargo-dylint*
-            ~/.cargo/bin/dylint-link*
-          key: dylint-tools-${{ runner.os }}-${{ runner.arch }}-6.0.1
-
-      - name: Install Dylint 6.0.1 tools
-        if: ${{ inputs.dylint && steps.dylint-tools.outputs.cache-hit != 'true' }}
+      - name: Set up managed Dylint tools and compiler cache
+        uses: zackees/setup-soldr@v0
         env:
-          CARGO_BIN: cargo
-        run: rustup run 1.95.0 "$CARGO_BIN" install cargo-dylint@6.0.1 dylint-link@6.0.1 --locked --force
-
-      # #1216: save only on main; PR runs restore main's entry.
-      - name: Save Dylint 6.0.1 tools
-        if: ${{ inputs.dylint && github.ref == 'refs/heads/main' && steps.dylint-tools.outputs.cache-hit != 'true' }}
-        uses: actions/cache/save@v4
+          SOLDR_DYLINT_DRIVER_FALLBACK: "off"
         with:
-          path: |
-            ~/.cargo/bin/cargo-dylint*
-            ~/.cargo/bin/dylint-link*
-          key: ${{ steps.dylint-tools.outputs.cache-primary-key }}
-
-      - name: Restore Dylint target
-        if: ${{ inputs.dylint }}
-        id: dylint-target
-        uses: actions/cache/restore@v4
-        with:
-          path: ${{ runner.temp }}/running-process-dylint-target
-          key: dylint-target-v8-${{ runner.os }}-${{ runner.arch }}-6.0.1-nightly-2026-04-16-${{ hashFiles('lints/running-process-env-literal/Cargo.lock', 'lints/running-process-platform-boundary/Cargo.lock', 'Cargo.lock') }}
+          version: "0.9.29"
+          cache: true
+          ci-tests: true
+          job-status: ${{ job.status }}
+          save-cache: auto
+          save-cache-remote: ${{ github.ref == 'refs/heads/main' && 'auto' || 'false' }}
+          cache-key-suffix: dylint-${{ inputs.label }}
+          # Dylint embeds template.tar from its registry source; the current
+          # registry payload omits that asset. Keep compiler-unit reuse only.
+          cargo-registry-cache: false
+          prebuild-deps: none
+          dylint: true
+          dylint-toolchain: nightly-2026-05-28
+          cargo-dylint-version: "6.0.3"
+          dylint-link-version: "6.0.3"
+          dylint-output-cache: false
 
       # The fixture tests and `cargo dylint` build the same dependencies, but
       # cargo-dylint links with `dylint-link`, and the linker is part of cargo's
       # fingerprint. Sharing one target dir made each side rebuild ~80 crates
       # every run (the saved cache held only the gate's state). The fixtures
-      # get their own subdirectory inside the cached path.
+      # get their own ephemeral subdirectory; linked fixtures are never cached.
       - name: Dylint negative fixture
         if: ${{ inputs.dylint }}
         working-directory: lints/running-process-env-literal
         env:
           CARGO_BIN: cargo
           CARGO_TARGET_DIR: ${{ runner.temp }}/running-process-dylint-target/fixtures
-        run: rustup run nightly-2026-04-16 "$CARGO_BIN" test --locked
+        run: soldr cargo +nightly-2026-05-28 test --locked
 
       - name: Dylint platform-boundary fixture
         if: ${{ inputs.dylint }}
@@ -430,7 +406,7 @@ jobs:
         env:
           CARGO_BIN: cargo
           CARGO_TARGET_DIR: ${{ runner.temp }}/running-process-dylint-target/fixtures
-        run: rustup run nightly-2026-04-16 "$CARGO_BIN" test --locked
+        run: soldr cargo +nightly-2026-05-28 test --locked
 
       - name: Dylint workspace gate
         if: ${{ inputs.dylint }}
@@ -438,16 +414,9 @@ jobs:
           CARGO_BIN: cargo
           CARGO_TARGET_DIR: ${{ runner.temp }}/running-process-dylint-target
         run: |
-          rustup run nightly-2026-04-16 "$CARGO_BIN" dylint --all --workspace
-          rustup run nightly-2026-04-16 "$CARGO_BIN" dylint --path lints --pattern running-process-platform-boundary --workspace
+          soldr dylint --all --workspace
+          soldr dylint --all --path lints --pattern running-process-platform-boundary --workspace
 
-      # #1216: save only on main; PR runs restore main's entry.
-      - name: Save Dylint target
-        if: ${{ inputs.dylint && github.ref == 'refs/heads/main' && steps.dylint-target.outputs.cache-hit != 'true' }}
-        uses: actions/cache/save@v4
-        with:
-          path: ${{ runner.temp }}/running-process-dylint-target
-          key: ${{ steps.dylint-target.outputs.cache-primary-key }}
 
   # One required check for the lint lanes. `dylint` is skipped when a caller
   # does not request it, which is fine; but if it was requested it must have
