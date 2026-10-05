@@ -1,0 +1,171 @@
+# ci.toml — this repository's CI contract. Checked and planned by ci-lint
+# (zackees/ci.yml). Nothing here generates YAML: it bounds what the YAML may
+# do and decides what each run selects.
+#
+# First declaration for this repository (zackees/ci.yml#335). Every platform,
+# runner, target, toolchain channel and cache family below was read off the
+# existing workflows and the live cache listing, not inferred -- where the YAML
+# and this file disagree, the YAML is right and this file is the bug.
+#
+# `[local.gate]` is deliberately ABSENT. This repository declares its gate in
+# `local-gate.toml`, and declaring both is a GATE-001 violation: two
+# declarations can drift apart.
+schema  = 3
+profile = "rust-pypi-app"
+linter  = "zackees/ci.yml@86b63937960d00655f7ef3752ef6f15b6b06f35b"
+
+# ── Platforms ────────────────────────────────────────────────────────────────
+# Cross-compiled from Linux, executed on its own runner. The `group` drives the
+# [ci-linux]/[ci-windows]/[ci-macos] tags that ci.yml's matrix consumes.
+[platforms]
+linux-x64     = { target = "x86_64-unknown-linux-gnu",  runs-on = "ubuntu-24.04",     group = "linux",   wheel = "manylinux_2_17" }
+linux-arm64   = { target = "aarch64-unknown-linux-gnu", runs-on = "ubuntu-24.04-arm", group = "linux",   wheel = "manylinux_2_17" }
+windows-x64   = { target = "x86_64-pc-windows-msvc",    runs-on = "windows-2025",     group = "windows" }
+windows-arm64 = { target = "aarch64-pc-windows-msvc",   runs-on = "windows-11-arm",   group = "windows" }
+macos-arm64   = { target = "aarch64-apple-darwin",      runs-on = "macos-15",         group = "macos" }
+macos-x64     = { target = "x86_64-apple-darwin",       runs-on = "macos-15-intel",   group = "macos" }
+
+# ── Python packaging ─────────────────────────────────────────────────────────
+# `running-process` and `running-processor` are the console scripts; both wrap
+# the native extension, so `native = true` and both platforms are real.
+[python]
+backend = "soldr"
+cli     = { name = "running-process", crate = "running-process-py", native = true }
+abi3    = "cp310"
+pythons = ["3.11"]
+
+# ── Rust workspace discipline ─────────────────────────────────────────────────
+# One published amalgam; everything under crates/ except it is internal.
+[rust]
+public  = "crates/running-process-py"
+private = "crates/running-process-probe-*"
+
+[rust.tests]
+max-binary = "60MB"
+max-total  = "400MB"
+binaries   = ["running-process:lib", "running-process-py:lib", "test-watchdog:lib"]
+
+# ── Suites ───────────────────────────────────────────────────────────────────
+# Each id generates [ci-test-<id>]; a skip inside a required suite is a failure.
+[suites]
+unit        = { run = "ci/test.py unit",   required = true }
+integration = { run = "ci/test.py integration", required = true }
+smoke       = { run = "ci/build_wheel.py smoke", required = true }
+init        = { run = "ci/build_wheel.py init", cache = "none" }
+
+# ── Flows ────────────────────────────────────────────────────────────────────
+[flow.pr]
+platforms = ["linux-x64"]
+suites    = ["unit", "smoke"]
+budget    = { critical-path = "8m" }
+
+[flow.main]
+extends   = "pr"
+cache     = "write"
+pre-prune = true
+
+[flow.release]
+platforms = "all"
+suites    = "all"
+wheels    = "all"
+publish   = "pypi"
+
+[flow.nightly]
+extends   = "release"
+schedule  = "daily"
+cache     = "write"
+janitor   = true
+publish   = "none"
+pre-prune = true
+
+# ── Tags that are not derived ────────────────────────────────────────────────
+[tags]
+ci-full       = { add = { platforms = "all", suites = ["integration"] } }
+ci-integration= { add = { suites = ["integration"] } }
+release       = { flow = "release", publish = "rehearsal" }
+
+# ── Default-branch reuse ─────────────────────────────────────────────────────
+# `off` is the honest value, not a default: this repository runs a full push
+# pipeline on main and does not yet measure whether a merged PR already proved
+# the tree. kernal-api adopted GEN-021 for exactly that reason; the same
+# measurement is what would justify moving this to "shadow" (ci-lint reuse-report).
+[reuse.default-branch]
+mode           = "off"
+workflows      = ["ci.yml"]
+required-jobs  = "plan"
+max-age-hours  = 24
+
+# ── Cache ────────────────────────────────────────────────────────────────────
+# The budget is the measured live footprint headroom, not a guess: this
+# repository's caches were measured at the GitHub 10GiB ceiling in Oct 2026,
+# and `evict = "lru"` is what keeps a family from growing without bound
+# (CACHE-029). Families below 256MB are unopted for promotion: a small family's
+# entry count is noise, not a budget threat (CACHE-031).
+[cache]
+budget   = "9GB"
+write-on = ["main"]
+never    = ["linked-tests", "nextest-archives"]   # measured: this repo never saves these
+retired  = []
+pr       = { mode = "none", families = [], max-per-pr = "0MB", budget = "0MB", trim = "on-close" }
+
+[cache.family]
+compile    = { via = "setup-soldr:build-cache",     max = "1400MB", lockfile = true, per = "platform", evict = "lru", promote = "ancestor" }
+toolchain  = { via = "setup-soldr:solo-toolchain", max = "210MB",  per = "none",                evict = "lru" }
+soldr-mini = { via = "setup-soldr:soldr-mini",     max = "15MB",   per = "none",                evict = "lru" }
+uv         = { via = "setup-uv",                   max = "100MB",  per = "platform",            evict = "lru" }
+dylint     = { via = "setup-soldr:dylint",         max = "600MB",  per = "none", min = "1MB",   evict = "lru", promote = "ancestor" }
+dylint-out = { via = "setup-soldr:dylint-output",  max = "700MB",  lockfile = true, per = "none", min = "1MB", evict = "lru", promote = "ancestor" }
+
+# Promotion (CACHE-024, zackees/ci.yml#335). Standardizing on setup-soldr's
+# ancestor encoding -- shortest parent-edge distance from a live git DAG walk
+# -- rather than a first-parent ordinal, which inverts on wide merges (a
+# 50-commit branch tip reports ordinal 53 while the merge commit containing it
+# reports 4, so a cache saved at the merge looks OLDER than one saved 50 commits
+# before it). #335 keeps the `m<n>` label for offline audit only.
+#
+# Declaring the mode opts each family above into the LINEAGE LABEL that makes a
+# nearest-ancestor search decidable; a key ending in a bare content hash
+# destroys the ancestry at save time (CACHE-031).
+#
+# A declaration only: setup-soldr#566 is merged but UNRELEASED (no tag contains
+# it; v0.9.85 predates it; the sanctioned v0 float trails main), so CACHE-030
+# and CACHE-032 report `needs_review` and the opt-in is silently inert until a
+# release carries it.
+[cache.promote]
+mode          = "ancestor"
+max-age-hours = 168
+
+# ── Local runs ───────────────────────────────────────────────────────────────
+# Only the runner is declared; the gate itself lives in `local-gate.toml`, and
+# declaring `[local.gate]` here as well would be GATE-001.
+[local]
+runner = "bosn-act"
+lanes  = ["precheck"]
+cache  = "machine"
+
+# ── Allowlist ────────────────────────────────────────────────────────────────
+# Every workflow that exists in this repository, with the events it may select
+# on. A workflow file that exists but is not declared here is GEN-008.
+[allow]
+workflows         = { "ci.yml" = ["pull_request", "merge_group", "push:main", "schedule", "workflow_dispatch"], "ci-preflight.yml" = ["pull_request", "merge_group", "push:main", "schedule", "workflow_dispatch"], "ci-preflight-rust.yml" = ["pull_request", "merge_group", "push:main", "schedule", "workflow_dispatch"], "_build.yml" = ["pull_request", "merge_group", "push:main", "schedule", "workflow_dispatch"], "ci-linux.yml" = ["pull_request", "merge_group", "push:main", "schedule", "workflow_dispatch"], "ci-macos.yml" = ["pull_request", "merge_group", "push:main", "schedule", "workflow_dispatch"], "ci-windows.yml" = ["pull_request", "merge_group", "push:main", "schedule", "workflow_dispatch"], "ci-all-features.yml" = ["pull_request", "merge_group", "push:main", "schedule", "workflow_dispatch"], "ci-output-shutdown.yml" = ["pull_request", "merge_group", "push:main", "schedule", "workflow_dispatch"], "cache-budget.yml" = ["pull_request", "merge_group", "push:main", "schedule", "workflow_dispatch"], "coverage.yml" = ["pull_request", "merge_group", "push:main", "schedule", "workflow_dispatch"], "auto-release.yml" = ["push:tag", "workflow_dispatch"] }
+actions           = ["actions/checkout", "actions/upload-artifact", "actions/download-artifact", "zackees/setup-soldr", "astral-sh/setup-uv"]
+tools             = ["soldr", "uv", "python3", "yq", "git"]
+secrets           = []
+setup-uv          = { require = { save-cache = "plan" } }
+# This repository calls `zackees/setup-soldr` directly from its workflows and
+# has no composite wrapper under `.github/actions/`, so there is no
+# `only-in` directory to name. The key is required by schema 3, so the
+# empty string is the honest value: it asserts "no wrapper anywhere"
+# rather than pointing at a directory that does not exist.
+setup-soldr       = { only-in = "", require = { save-cache = "plan" } }
+platform-selector = "crates/running-process-platform-internal/src/lib.rs"
+# Read off the workflows: auto-release.yml's `publish-pypi` (id-token, OIDC to
+# PyPI) and ci.yml's / cache-budget.yml's `enforce-cache-budget` (actions:
+# write, to retire entries). Top-level permissions are capped at
+# contents:read + actions:read; any wider per-job grant must be listed here.
+permissions = { "id-token: write" = ["publish-pypi"], "actions: write" = ["enforce-cache-budget"] }
+platform-code     = ["crates/running-process-platform-internal/src/**", "src/running_process/platforms/**"]
+
+# ── Publish ──────────────────────────────────────────────────────────────────
+[publish]
+pypi = { auth = "oidc", environment = "pypi", mode = "mock" }
