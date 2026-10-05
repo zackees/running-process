@@ -60,9 +60,27 @@ suites    = ["unit", "smoke"]
 budget    = { critical-path = "8m" }
 
 [flow.main]
-extends   = "pr"
-cache     = "write"
-pre-prune = true
+extends = "pr"
+cache   = "write"
+# `pre-prune` is deliberately ABSENT (CACHE-034). It was declared here and on
+# [flow.nightly], but no workflow in this repository ever runs
+# `ci-lint cache preprune`, so the declaration was an unhonoured waiver:
+# ci_lint's CACHE-004 arithmetic honours it by dropping the lockfile-change
+# peak from the worst-case footprint, which understated this repository's
+# modelled cache footprint by exactly that peak for free.
+#
+# Option (A) -- adding the pre-prune step -- is not expressible here. The
+# writer flows are not one workflow: `push:main` fans out across ci.yml,
+# dependency-check.yml, proto-breaking.yml, security-audit.yml and
+# security-fuzz.yml, each triggered independently on the same push, and each
+# saving its own setup-soldr cache (compile/dylint/dylint-out, two of which
+# are lockfile-keyed). GitHub Actions has no cross-workflow barrier, so no
+# single job can run a prune before all of them. Only cache-budget.yml can
+# see the whole account, and it runs *after* the writers (it `needs:` the
+# platform lanes), which is a post-hoc trim, not a pre-prune. Until a
+# mechanism exists to order a prune ahead of independently-triggered
+# writers, the honest declaration is none at all, and CACHE-004 counts the
+# peak.
 
 [flow.release]
 platforms = "all"
@@ -71,12 +89,14 @@ wheels    = "all"
 publish   = "pypi"
 
 [flow.nightly]
-extends   = "release"
-schedule  = "daily"
-cache     = "write"
-janitor   = true
-publish   = "none"
-pre-prune = true
+extends  = "release"
+schedule = "daily"
+cache    = "write"
+janitor  = true
+publish  = "none"
+# `pre-prune` absent for the same reason as [flow.main] -- see the comment
+# there. This flow extends `release`, not `main`, so it needs its own
+# justification and does not get one.
 
 # ── Tags that are not derived ────────────────────────────────────────────────
 [tags]
