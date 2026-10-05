@@ -1,0 +1,102 @@
+schema = 3
+profile = "library"
+linter  = "zackees/ci.yml@6a4818911b1a2e4b8f4e9f8a9a5c0e1d2f3a4b5c"   # the exact ci-lint commit precheck runs
+
+# ── Platforms ─────────────────────────────────────────────────────────────
+# From this repository's own workflow runner labels.
+[platforms]
+linux-x64   = { target = "x86_64-unknown-linux-gnu",  runs-on = "ubuntu-24.04",    group = "linux",   wheel = "manylinux_2_17" }
+linux-arm64 = { target = "aarch64-unknown-linux-gnu", runs-on = "ubuntu-24.04-arm", group = "linux",   wheel = "manylinux_2_17" }
+windows-x64 = { target = "x86_64-pc-windows-msvc",    runs-on = "windows-2025",     group = "windows" }
+windows-arm64 = { target = "aarch64-pc-windows-msvc", runs-on = "windows-11-arm",   group = "windows" }
+macos-x64   = { target = "x86_64-apple-darwin",       runs-on = "macos-15-intel",   group = "macos" }
+macos-arm64 = { target = "aarch64-apple-darwin",      runs-on = "macos-15",         group = "macos" }
+
+[suites]
+preflight = { run = "python -m ci.preflight", required = true }
+lint      = { run = "python -m ci.lint_gates", required = true }
+unit      = { run = "python -m ci.unit",       required = true }
+dylint    = { run = "python -m ci.dylint",    required = false }
+
+[flow.linux]
+platforms  = ["linux-x64", "linux-arm64"]
+suites      = ["preflight", "lint", "unit", "dylint"]
+
+[flow.macos]
+platforms  = ["macos-x64", "macos-arm64"]
+suites      = ["preflight", "unit"]
+
+[flow.windows]
+platforms  = ["windows-x64", "windows-arm64"]
+suites      = ["preflight", "unit"]
+
+[tags]
+ci-full   = { add = { platforms = "all" } }
+
+# ── Cache sharing and management ───────────────────────────────────────────
+# Measured 2026-10-04 against the live Actions cache listing: 61 entries,
+# 8.61 GiB. Superseded entries were reclaimed in the same pass that took
+# clud and kernal-api under the cap (~1.0 GiB here).
+#
+# `compile` is declared with per-shape ceilings because its entries differ
+# wildly in size -- two ~1.25 GiB shapes and eight at <=529 MB. Declaring a
+# single `max` modelled the largest one across every platform (7.8 GB for a
+# family that occupies 5.0 GB), and the only `per` values small enough to fit
+# UNDER-counted, which is the direction that makes `ci-lint cache janitor`
+# delete live entries. See zackees/ci.yml#334.
+[cache]
+budget   = "9.5GB"
+write-on = ["main"]
+never    = []
+retired  = []
+pr       = { mode = "none", families = [], max-per-pr = "0MB", budget = "0MB", trim = "on-close" }
+
+[cache.family]
+compile = { via = "setup-soldr:build-cache", max = "1300MB", lockfile = true, per = "platform", evict = "lru", shapes = { "macos-arm64-shared" = { max = "1300MB" }, "macos-x86-shared" = { max = "1300MB" }, "linux-x86-musl-preflight" = { max = "1100MB" }, "linux-arm-musl-preflight" = { max = "550MB" }, "linux-x86-dylint" = { max = "400MB" }, "macos-x86-dylint" = { max = "300MB" }, "ubuntu-security-fuzz" = { max = "160MB" }, "ubuntu-reproducible" = { max = "150MB" }, "ubuntu-coverage" = { max = "10MB" }, "ubuntu-security-audit" = { max = "10MB" } } }
+# Dylint runs on the two Linux/macOS x64 lanes here; the other platforms
+# produce no dylint cache, so declaring a per-platform axis would overstate
+# this family four times over.
+dylint     = { via = "setup-soldr:dylint", max = "500MB", per = "platform", evict = "lru", shapes = { "linux-x64" = { max = "500MB" }, "macos-x64" = { max = "500MB" } } }
+toolchain  = { via = "setup-soldr:solo-toolchain", max = "180MB", per = "platform", evict = "lru" }
+soldr-mini = { via = "setup-soldr:soldr-mini", max = "15MB", per = "platform" }
+uv         = { via = "setup-uv", max = "5MB", per = "platform" }
+
+# KNOWN GAP: 21 live entries (~1.23 GB) come from this repository's own
+# composite actions writing through the sanctioned actions/cache wrapper
+# with custom literal prefixes -- `dylint-target-v8-*`, `dylint-tools-*`,
+# `venv-<os>-py3.11-*`, `fuzz-corpus-Linux-*`. No `[cache.family].via`
+# resolves to them: `via = "ci-lint"` builds `<family-id>-v1-` and every
+# `setup-soldr:*` value owns a fixed prefix. Declaring a family that does
+# not match would be fiction, so they stay undeclared and `ci-lint cache
+# audit` reports them as CACHE-001. Filed against the schema; the same gap
+# applies to zackees/clud's `venv-*` entries.
+
+[cache.promote]
+mode          = "off"
+max-age-hours = 168
+
+[local]
+runner = "bosn-act"
+lanes  = ["precheck", "fast"]
+cache  = "machine"
+
+[allow]
+workflows         = { "ci.yml" = ["pull_request", "push:main", "schedule", "workflow_dispatch"], "ci-preflight.yml" = ["workflow_call"], "ci-all-features.yml" = ["pull_request", "schedule"] }
+actions           = ["actions/checkout", "actions/upload-artifact", "actions/download-artifact", "zackees/setup-soldr", "astral-sh/setup-uv"]
+tools             = ["soldr", "uv", "git", "jq", "python"]
+setup-soldr       = { only-in = ".github/actions/soldr", require = { save-cache-remote = "plan" } }
+setup-uv          = { require = { save-cache = "plan" } }
+platform-selector = "ci/build_wheel.py"
+platform-code     = ["src/**"]
+
+[publish]
+pypi = { auth = "oidc", environment = "pypi", mode = "mock" }
+
+# The default-branch writer flow. `cache = "write"` marks it as a writer and
+# `pre-prune = true` waives the lockfile-change peak in CACHE-004's
+# arithmetic -- without it the peak doubles a ~7.5 GiB steady state and the
+# declared shape cannot fit the 9.5 GB budget.
+[flow.main]
+extends   = "linux"
+cache     = "write"
+pre-prune = true
