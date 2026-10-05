@@ -49,7 +49,10 @@ class LocalGateProofTests(unittest.TestCase):
         self.assertIsNone(self.error())
 
     def test_integration_label_preserves_additional_remote_coverage(self) -> None:
-        trust = (local_gate.ROOT / "local-gate.toml").read_text().split("[gate.trust]", 1)[1]
+        # The gate config moved into ci.toml: declaring [local.gate.replay] there makes
+        # ci_lint.local_gate._load_gate_config prefer it, and declaring both is a
+        # GATE-001 violation. So the proof is read from where it now lives.
+        trust = (local_gate.ROOT / "ci.toml").read_text().split("[local.gate.trust]", 1)[1]
         labels = next(line for line in trust.splitlines() if line.startswith("full-labels ="))
         self.assertIn("ci-integration", json.loads(labels.split("=", 1)[1]))
         workflow = (local_gate.ROOT / local_gate.WORKFLOW).read_text()
