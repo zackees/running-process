@@ -79,12 +79,15 @@ jobs:
       NEXTEST_TEST_THREADS: "num-cpus"
     steps:
       - uses: actions/checkout@v4
+        name: Checkout candidate source
 
       - uses: actions/setup-python@v5
+        name: Set up python
         with:
           python-version: "3.11"
 
       - uses: astral-sh/setup-uv@v5
+        name: Set up uv
         with:
           enable-cache: true
           cache-dependency-glob: "uv.lock"
@@ -359,6 +362,7 @@ jobs:
         shell: bash
     steps:
       - uses: actions/checkout@v4
+        name: Checkout candidate source
 
       - name: Set up managed Dylint tools and compiler cache
         uses: zackees/setup-soldr@v0

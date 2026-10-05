@@ -1,37 +1,37 @@
 schema = 3
 profile = "library"
-linter  = "zackees/ci.yml@6a4818911b1a2e4b8f4e9f8a9a5c0e1d2f3a4b5c"   # the exact ci-lint commit precheck runs
+linter = "zackees/ci.yml@6a4818911b1a2e4b8f4e9f8a9a5c0e1d2f3a4b5c" # the exact ci-lint commit precheck runs
 
 # ── Platforms ─────────────────────────────────────────────────────────────
 # From this repository's own workflow runner labels.
 [platforms]
-linux-x64   = { target = "x86_64-unknown-linux-gnu",  runs-on = "ubuntu-24.04",    group = "linux",   wheel = "manylinux_2_17" }
-linux-arm64 = { target = "aarch64-unknown-linux-gnu", runs-on = "ubuntu-24.04-arm", group = "linux",   wheel = "manylinux_2_17" }
-windows-x64 = { target = "x86_64-pc-windows-msvc",    runs-on = "windows-2025",     group = "windows" }
-windows-arm64 = { target = "aarch64-pc-windows-msvc", runs-on = "windows-11-arm",   group = "windows" }
-macos-x64   = { target = "x86_64-apple-darwin",       runs-on = "macos-15-intel",   group = "macos" }
-macos-arm64 = { target = "aarch64-apple-darwin",      runs-on = "macos-15",         group = "macos" }
+linux-x64 = { target = "x86_64-unknown-linux-gnu", runs-on = "ubuntu-24.04", group = "linux", wheel = "manylinux_2_17" }
+linux-arm64 = { target = "aarch64-unknown-linux-gnu", runs-on = "ubuntu-24.04-arm", group = "linux", wheel = "manylinux_2_17" }
+windows-x64 = { target = "x86_64-pc-windows-msvc", runs-on = "windows-2025", group = "windows" }
+windows-arm64 = { target = "aarch64-pc-windows-msvc", runs-on = "windows-11-arm", group = "windows" }
+macos-x64 = { target = "x86_64-apple-darwin", runs-on = "macos-15-intel", group = "macos" }
+macos-arm64 = { target = "aarch64-apple-darwin", runs-on = "macos-15", group = "macos" }
 
 [suites]
 preflight = { run = "python -m ci.preflight", required = true }
-lint      = { run = "python -m ci.lint_gates", required = true }
-unit      = { run = "python -m ci.unit",       required = true }
-dylint    = { run = "python -m ci.dylint",    required = false }
+lint = { run = "python -m ci.lint_gates", required = true }
+unit = { run = "python -m ci.unit", required = true }
+dylint = { run = "python -m ci.dylint", required = false }
 
 [flow.linux]
-platforms  = ["linux-x64", "linux-arm64"]
-suites      = ["preflight", "lint", "unit", "dylint"]
+platforms = ["linux-x64", "linux-arm64"]
+suites = ["preflight", "lint", "unit", "dylint"]
 
 [flow.macos]
-platforms  = ["macos-x64", "macos-arm64"]
-suites      = ["preflight", "unit"]
+platforms = ["macos-x64", "macos-arm64"]
+suites = ["preflight", "unit"]
 
 [flow.windows]
-platforms  = ["windows-x64", "windows-arm64"]
-suites      = ["preflight", "unit"]
+platforms = ["windows-x64", "windows-arm64"]
+suites = ["preflight", "unit"]
 
 [tags]
-ci-full   = { add = { platforms = "all" } }
+ci-full = { add = { platforms = "all" } }
 
 # ── Cache sharing and management ───────────────────────────────────────────
 # Measured 2026-10-04 against the live Actions cache listing: 61 entries,
@@ -45,21 +45,22 @@ ci-full   = { add = { platforms = "all" } }
 # UNDER-counted, which is the direction that makes `ci-lint cache janitor`
 # delete live entries. See zackees/ci.yml#334.
 [cache]
-budget   = "9.5GB"
+budget = "9.5GB"
 write-on = ["main"]
-never    = []
-retired  = []
-pr       = { mode = "none", families = [], max-per-pr = "0MB", budget = "0MB", trim = "on-close" }
+never = []
+retired = []
+pr = { mode = "none", families = [
+], max-per-pr = "0MB", budget = "0MB", trim = "on-close" }
 
 [cache.family]
 compile = { via = "setup-soldr:build-cache", max = "1300MB", lockfile = true, per = "platform", evict = "lru", shapes = { "macos-arm64-shared" = { max = "1300MB" }, "macos-x86-shared" = { max = "1300MB" }, "linux-x86-musl-preflight" = { max = "1100MB" }, "linux-arm-musl-preflight" = { max = "550MB" }, "linux-x86-dylint" = { max = "400MB" }, "macos-x86-dylint" = { max = "300MB" }, "ubuntu-security-fuzz" = { max = "160MB" }, "ubuntu-reproducible" = { max = "150MB" }, "ubuntu-coverage" = { max = "10MB" }, "ubuntu-security-audit" = { max = "10MB" } } }
 # Dylint runs on the two Linux/macOS x64 lanes here; the other platforms
 # produce no dylint cache, so declaring a per-platform axis would overstate
 # this family four times over.
-dylint     = { via = "setup-soldr:dylint", max = "500MB", per = "platform", evict = "lru", shapes = { "linux-x64" = { max = "500MB" }, "macos-x64" = { max = "500MB" } } }
-toolchain  = { via = "setup-soldr:solo-toolchain", max = "180MB", per = "platform", evict = "lru" }
+dylint = { via = "setup-soldr:dylint", max = "500MB", per = "platform", evict = "lru", shapes = { "linux-x64" = { max = "500MB" }, "macos-x64" = { max = "500MB" } } }
+toolchain = { via = "setup-soldr:solo-toolchain", max = "180MB", per = "platform", evict = "lru" }
 soldr-mini = { via = "setup-soldr:soldr-mini", max = "15MB", per = "platform" }
-uv         = { via = "setup-uv", max = "5MB", per = "platform" }
+uv = { via = "setup-uv", max = "5MB", per = "platform" }
 
 # KNOWN GAP: 21 live entries (~1.23 GB) come from this repository's own
 # composite actions writing through the sanctioned actions/cache wrapper
@@ -72,22 +73,38 @@ uv         = { via = "setup-uv", max = "5MB", per = "platform" }
 # applies to zackees/clud's `venv-*` entries.
 
 [cache.promote]
-mode          = "off"
+mode = "off"
 max-age-hours = 168
 
 [local]
 runner = "bosn-act"
-lanes  = ["precheck", "fast"]
-cache  = "machine"
+lanes = ["precheck", "fast"]
+cache = "machine"
 
 [allow]
-workflows         = { "ci.yml" = ["pull_request", "push:main", "schedule", "workflow_dispatch"], "ci-preflight.yml" = ["workflow_call"], "ci-all-features.yml" = ["pull_request", "schedule"] }
-actions           = ["actions/checkout", "actions/upload-artifact", "actions/download-artifact", "zackees/setup-soldr", "astral-sh/setup-uv"]
-tools             = ["soldr", "uv", "git", "jq", "python"]
-setup-soldr       = { only-in = ".github/actions/soldr", require = { save-cache-remote = "plan" } }
-setup-uv          = { require = { save-cache = "plan" } }
+workflows = { "ci.yml" = [
+  "pull_request",
+  "push:main",
+  "schedule",
+  "workflow_dispatch",
+], "ci-preflight.yml" = [
+  "workflow_call",
+], "ci-all-features.yml" = [
+  "pull_request",
+  "schedule",
+] }
+actions = [
+  "actions/checkout",
+  "actions/upload-artifact",
+  "actions/download-artifact",
+  "zackees/setup-soldr",
+  "astral-sh/setup-uv",
+]
+tools = ["soldr", "uv", "git", "jq", "python"]
+setup-soldr = { only-in = ".github/actions/soldr", require = { save-cache-remote = "plan" } }
+setup-uv = { require = { save-cache = "plan" } }
 platform-selector = "ci/build_wheel.py"
-platform-code     = ["src/**"]
+platform-code = ["src/**"]
 
 [publish]
 pypi = { auth = "oidc", environment = "pypi", mode = "mock" }
@@ -97,6 +114,135 @@ pypi = { auth = "oidc", environment = "pypi", mode = "mock" }
 # arithmetic -- without it the peak doubles a ~7.5 GiB steady state and the
 # declared shape cannot fit the 9.5 GB budget.
 [flow.main]
-extends   = "linux"
-cache     = "write"
+extends = "linux"
+cache = "write"
 pre-prune = true
+
+# ── Local gate (moved verbatim from local-gate.toml) ─────────────────────────
+# `ci_lint.local_gate._load_gate_config` prefers ci.toml's [local.gate]
+# whenever that table EXISTS, so declaring the replay sections below REQUIRES
+# the whole gate config to live here too -- hence the move, not an addition.
+[local.gate]
+run = [
+  "uv",
+  "run",
+  "--no-project",
+  "--python",
+  "3.11",
+  "python",
+  "ci/local_gate.py",
+]
+verify = "ci.yml:ci-mode"
+mode = "enforce"
+
+[local.gate.lanes.linux-quick]
+run = [
+  "uv",
+  "run",
+  "--no-project",
+  "--python",
+  "3.11",
+  "python",
+  "ci/local_gate.py",
+]
+tools = ["bosn", "docker"]
+# No exclusions until input-reuse evidence proves them safe.
+
+[local.gate.trust]
+mode = "enforce"
+skip = ["ci.yml:linux-quick"]
+covered-by = { "ci.yml:linux-quick" = ["linux-quick"] }
+surfaces = [
+  "ci/**",
+  "lints/**",
+  ".config/nextest.toml",
+  "Cargo.lock",
+  "rust-toolchain.toml",
+  "bosn.toml",
+]
+full-labels = ["ci-full", "ci-integration"]
+audit-rate = 10
+
+# `linux-quick` is a REUSABLE-WORKFLOW call into ci-preflight.yml. Without
+# these declarations bosn replays the whole caller and exits 3 with
+# `conclusion: "incomplete"` and `reason: "reusable workflows require
+# qualified execution identity"` -- even when every job and every step
+# succeeded (`jobs: {total 4, completed 4, failed 0}`). Declaring the
+# callee's inner jobs gives each a qualified execution identity, the same
+# shape kernal-api's gate uses.
+[local.gate.replay]
+repository = "zackees/running-process"
+workflow = "ci.yml"
+mode = "minimal"
+
+[[local.gate.replay.jobs]]
+source-job = "ci.yml:ci-mode"
+key = "CI/CI mode"
+steps = [
+  "Checkout candidate source",
+  "Checkout pinned ci-lint",
+  "Local gate attestation",
+]
+lanes = ["linux-quick"]
+
+[[local.gate.replay.jobs]]
+source-job = "ci-preflight.yml:preflight"
+key = "Linux x64 checks/CI Preflight (Reusable)/preflight (linux-x86)"
+steps = [
+  "Checkout candidate source",
+  "Set up python",
+  "Set up uv",
+  "Restore venv",
+  "Set up soldr (toolchain + build cache)",
+  "Install cargo-nextest",
+  "Sync venv (frozen, no project install)",
+  "Save venv",
+  "cargo build (workspace + all-targets, debug, --features client)",
+  "Dev wheel build",
+  "Lint",
+  "Record kernel substrate timing",
+  "Async semantic capture contract (kernel substrate)",
+  "Direct backend identity contract",
+  "Frame v1 codec contract",
+  "Daemon registration contract",
+  "Daemon registration v2 writer contract",
+  "Upload kernel substrate timing",
+  "Terminal graphics capability matrix",
+  "Report terminal graphics capability matrix",
+  "Unit Tests",
+  "Broker Hello perf guard",
+  "Integration Tests",
+  "Build all binaries (daemon feature)",
+  "Clear stale servicedef state",
+  "Servicedef install-path proof",
+  "Upload servicedef proof evidence",
+  "Check Rust API docs",
+  "Display failure diagnostics",
+  "Upload failure logs",
+  "Upload terminal capability matrix",
+]
+lanes = ["linux-quick"]
+
+[[local.gate.replay.jobs]]
+source-job = "ci-preflight.yml:dylint"
+key = "Linux x64 checks/CI Preflight (Reusable)/dylint (linux-x86)"
+steps = [
+  "Checkout candidate source",
+  "Set up managed Dylint tools and compiler cache",
+  "Dylint negative fixture",
+  "Dylint platform-boundary fixture",
+  "Dylint workspace gate",
+]
+lanes = ["linux-quick"]
+
+[[local.gate.replay.jobs]]
+source-job = "ci-preflight.yml:lint-gates"
+key = "Linux x64 checks/CI Preflight (Reusable)/lint gates (linux-x86)"
+steps = ["Require preflight and requested Dylint to have passed"]
+lanes = ["linux-quick"]
+
+[[local.gate.replay.selections]]
+lane = "linux-quick"
+job = "linux-quick"
+event = "pull_request"
+inputs = { os = "ubuntu-24.04", label = "linux-x86", rustdoc = "false", integration-test = "false", dylint = "true" }

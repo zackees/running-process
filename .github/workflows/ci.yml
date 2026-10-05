@@ -37,12 +37,14 @@ jobs:
       trusted: ${{ steps.gate.outputs.trusted }}
       skip_linux-quick: ${{ steps.gate.outputs.skip_linux-quick }}
     steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - name: Checkout candidate source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
           fetch-depth: 0
           persist-credentials: false
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - name: Checkout pinned ci-lint
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           repository: zackees/ci.yml
           ref: 86b63937960d00655f7ef3752ef6f15b6b06f35b
