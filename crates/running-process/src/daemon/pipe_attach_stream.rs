@@ -24,6 +24,11 @@ use crate::daemon::handlers::DaemonState;
 use crate::daemon::pipe_sessions::{PipeAttachError, PipeStreamSelect};
 use crate::daemon::pty_sessions::{AttachmentEnded, OutboundFrame};
 
+#[expect(
+    clippy::cognitive_complexity,
+    clippy::too_many_lines,
+    reason = "baseline, zackees/ci.yml#229"
+)]
 pub async fn run_pipe_attach_stream<T>(
     mut framed: Framed<T, LengthDelimitedCodec>,
     request_id: u64,

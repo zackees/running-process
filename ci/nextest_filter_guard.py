@@ -74,7 +74,7 @@ def declared_modules(main_rs: Path) -> set[str]:
     return set(re.findall(r"^\s*mod\s+([A-Za-z0-9_]+)\s*;", text, re.MULTILINE))
 
 
-def main() -> int:
+def main() -> int:  # noqa: C901
     if not CONFIG.is_file():
         print(f"nextest-filter-guard: {CONFIG} is missing")
         return 1

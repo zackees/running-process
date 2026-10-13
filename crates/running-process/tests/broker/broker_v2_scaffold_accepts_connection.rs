@@ -103,6 +103,7 @@ fn sigterm_requests_bounded_clean_shutdown() {
 /// ErrorServiceUnknown. This test installs a stub servicedef in a
 /// tempdir + points the broker at it via `RUNNING_PROCESS_SERVICE_DEF_DIR`.
 #[test]
+#[expect(clippy::too_many_lines, reason = "baseline, zackees/ci.yml#229")]
 fn binary_binds_pipe_accepts_connection_and_exits() {
     // Install a stub servicedef so the broker's loader accepts the
     // test Hello. Per-test tempdir keeps concurrent runs isolated.

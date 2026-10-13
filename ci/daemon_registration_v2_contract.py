@@ -4,13 +4,15 @@ from __future__ import annotations
 
 import os
 import re
-import subprocess
 import sys
+import tempfile
 from collections.abc import Mapping
+from dataclasses import dataclass
 from pathlib import Path
 
 import tomllib
 
+from ci import consumer_contract
 from ci.soldr import cargo_command
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -55,7 +57,6 @@ FORBIDDEN_PACKAGES = {
     "tracing-subscriber",
 }
 CONSUMER_ROOT = ROOT / "crates" / "running-process" / "tests" / "daemon-registration-v2-consumer"
-CONSUMER_TARGET_DIR = ROOT / "target" / "daemon-registration-v2-consumer-contract"
 
 
 def compile_command() -> tuple[str, ...]:
@@ -108,9 +109,13 @@ def tree_command() -> tuple[str, ...]:
     )
 
 
-def external_consumer_command(name: str) -> tuple[str, ...]:
+def external_consumer_command(name: str, manifest: Path | None = None) -> tuple[str, ...]:
     return tuple(
-        cargo_command("check", "--manifest-path", str(CONSUMER_ROOT / name / "Cargo.toml"))
+        cargo_command(
+            "check",
+            "--manifest-path",
+            str(manifest if manifest is not None else CONSUMER_ROOT / name / "Cargo.toml"),
+        )
     )
 
 
@@ -184,49 +189,45 @@ def source_failures() -> list[str]:
 
 def run_external_consumer(name: str, *, should_succeed: bool) -> str | None:
     environment = os.environ.copy()
-    environment["CARGO_TARGET_DIR"] = str(CONSUMER_TARGET_DIR)
-    result = subprocess.run(
-        external_consumer_command(name),
-        cwd=ROOT,
-        text=True,
-        capture_output=True,
-        check=False,
-        env=environment,
+    environment["CARGO_TARGET_DIR"] = str(
+        consumer_contract.consumer_target_dir(ROOT, "daemon-registration-v2-consumer-contract")
     )
-    if (result.returncode == 0) != should_succeed:
-        return (
-            result.stdout + result.stderr
-            or f"external consumer {name!r} returned {result.returncode}"
+    with tempfile.TemporaryDirectory(prefix="running-process-consumer-") as scratch:
+        manifest = consumer_contract.stage_consumer(CONSUMER_ROOT, name, Path(scratch))
+        result = consumer_contract.run_command(
+            ROOT, external_consumer_command(name, manifest), environment
         )
+    if (result.returncode == 0) != should_succeed:
+        return result.output or f"external consumer {name!r} returned {result.returncode}"
     return None
 
 
-def main() -> int:
+@dataclass(frozen=True)
+class ConsumerCase:
+    name: str
+    should_succeed: bool
+
+
+def main() -> int:  # noqa: C901
     failures = manifest_failures(load_manifest())
     failures.extend(source_failures())
     if not failures:
-        result = subprocess.run(
-            tree_command(), cwd=ROOT, text=True, capture_output=True, check=False
-        )
+        result = consumer_contract.run_command(ROOT, tree_command())
         if result.returncode:
-            failures.append(result.stderr or result.stdout)
+            failures.append(result.output)
         else:
-            failures.extend(graph_failures(result.stdout))
+            failures.extend(graph_failures(result.output))
     if not failures:
-        result = subprocess.run(
-            compile_command(), cwd=ROOT, text=True, capture_output=True, check=False
-        )
+        result = consumer_contract.run_command(ROOT, compile_command())
         if result.returncode:
-            failures.append(result.stderr or result.stdout)
+            failures.append(result.output)
     if not failures:
-        result = subprocess.run(
-            clippy_command(), cwd=ROOT, text=True, capture_output=True, check=False
-        )
+        result = consumer_contract.run_command(ROOT, clippy_command())
         if result.returncode:
-            failures.append(result.stderr or result.stdout)
+            failures.append(result.output)
     if not failures:
-        for name, should_succeed in (("pass", True), ("fail-client", False)):
-            if failure := run_external_consumer(name, should_succeed=should_succeed):
+        for case in (ConsumerCase("pass", True), ConsumerCase("fail-client", False)):
+            if failure := run_external_consumer(case.name, should_succeed=case.should_succeed):
                 failures.append(failure)
     if failures:
         print("daemon-registration-v2 contract failed:", *failures, sep="\n  - ", file=sys.stderr)

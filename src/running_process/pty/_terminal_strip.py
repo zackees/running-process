@@ -10,7 +10,7 @@ class _TerminalControlStripper:
     _pending: bytearray = field(default_factory=bytearray)
     _string_terminator: bytes | None = None
 
-    def strip(self, chunk: bytes) -> bytes:
+    def strip(self, chunk: bytes) -> bytes:  # noqa: C901
         if not chunk and not self._pending:
             return b""
         data = bytes(self._pending) + bytes(chunk)

@@ -36,6 +36,7 @@ fn running_process(py: Python<'_>, script: &str) -> PyNativeProcess {
 }
 
 #[test]
+#[expect(clippy::cognitive_complexity, reason = "baseline, zackees/ci.yml#229")]
 fn pty_dispatch_covers_prestart_and_backend_specific_contracts() {
     pyo3::Python::initialize();
     pyo3::Python::attach(|py| {

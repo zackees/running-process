@@ -84,6 +84,7 @@ impl IndependentChild {
     }
 }
 
+#[expect(clippy::too_many_lines, reason = "baseline, zackees/ci.yml#229")]
 pub fn spawn(
     spec: &LaunchSpec,
     helper: &Path,
@@ -203,6 +204,7 @@ pub fn spawn(
 }
 
 /// Connect only to an already-running broker verified outside the worker.
+#[expect(clippy::too_many_lines, reason = "baseline, zackees/ci.yml#229")]
 pub fn spawn_broker(
     spec: &LaunchSpec,
     address: &str,

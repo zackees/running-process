@@ -71,3 +71,32 @@ def test_external_consumer_fixture_is_an_independent_no_default_manifest() -> No
 def test_dispatcher_exposes_frame_v1_guard_and_runtime_contract() -> None:
     assert STAGES["guard-frame-v1-codec"] == "ci.frame_v1_codec_contract"
     assert STAGES["test-frame-v1-codec"] == "ci.frame_v1_codec_e2e"
+
+
+def test_consumer_target_honors_writable_root() -> None:
+    from unittest.mock import patch
+
+    from ci.frame_v1_codec_contract import consumer_target_dir
+
+    with patch.dict("os.environ", {"CARGO_TARGET_DIR": "/writable/build"}):
+        assert str(consumer_target_dir()) == "/writable/build/frame-v1-codec-consumer-contract"
+
+
+def test_staged_fixture_preserves_dependency_and_source() -> None:
+    import tempfile
+    from pathlib import Path
+
+    from ci.frame_v1_codec_contract import CONSUMER_ROOT, ROOT, stage_consumer
+
+    original = (CONSUMER_ROOT / "pass" / "Cargo.toml").read_bytes()
+    with tempfile.TemporaryDirectory() as scratch:
+        manifest = stage_consumer("pass", Path(scratch))
+        data = tomllib.loads(manifest.read_text())
+        dependency = data["dependencies"]["running-process"]
+        assert Path(dependency["path"]) == ROOT / "crates" / "running-process"
+        assert dependency["features"] == ["frame-v1-codec"]
+        assert dependency["default-features"] is False
+        assert (manifest.parent / "src" / "main.rs").read_bytes() == (
+            CONSUMER_ROOT / "pass" / "src" / "main.rs"
+        ).read_bytes()
+    assert (CONSUMER_ROOT / "pass" / "Cargo.toml").read_bytes() == original

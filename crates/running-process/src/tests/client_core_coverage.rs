@@ -40,6 +40,7 @@ fn write_response(stream: &mut Stream, response: DaemonResponse) {
 }
 
 #[test]
+#[expect(clippy::too_many_lines, reason = "baseline, zackees/ci.yml#229")]
 fn core_client_maps_spawn_and_session_administration_responses() {
     let path = socket_path();
     let _ = std::fs::remove_file(&path);

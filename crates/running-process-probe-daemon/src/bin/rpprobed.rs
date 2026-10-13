@@ -165,6 +165,7 @@ fn main() {
     }
 }
 
+#[expect(clippy::too_many_lines, reason = "baseline, zackees/ci.yml#229")]
 fn run_as_daemon(
     beacon: std::net::TcpListener,
     port: u16,

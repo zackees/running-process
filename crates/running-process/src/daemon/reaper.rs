@@ -215,6 +215,7 @@ pub fn kill_conhosts(conhosts: &[ZombieInfo]) -> Vec<(u32, bool)> {
 /// Long-running async task that periodically scans for and kills zombie processes.
 ///
 /// Runs until the daemon's shutdown signal is received.
+#[expect(clippy::cognitive_complexity, reason = "baseline, zackees/ci.yml#229")]
 pub async fn reaper_loop(state: Arc<DaemonState>, interval_secs: u64) {
     let mut shutdown_rx = state.shutdown_tx.subscribe();
     let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(interval_secs));

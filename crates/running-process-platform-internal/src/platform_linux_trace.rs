@@ -164,6 +164,7 @@ struct Tracee {
     origin: Option<TraceOriginArtifact>,
 }
 
+#[expect(clippy::too_many_lines, reason = "baseline, zackees/ci.yml#229")]
 fn trace_loop(
     mut child: Child,
     shared: Arc<Shared>,

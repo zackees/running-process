@@ -498,6 +498,7 @@ async fn run_session_actor(
     .await;
 }
 
+#[expect(clippy::too_many_lines, reason = "baseline, zackees/ci.yml#229")]
 async fn serve_session_child(actor: SessionActor<'_>) {
     let SessionActor {
         mut lifecycle,
@@ -920,6 +921,11 @@ async fn run_actor(
     serve_child(child, pid, &mut commands, output_log).await;
 }
 
+#[expect(
+    clippy::cognitive_complexity,
+    clippy::too_many_lines,
+    reason = "baseline, zackees/ci.yml#229"
+)]
 async fn serve_child(
     child: PlatformChild,
     pid: Option<u32>,

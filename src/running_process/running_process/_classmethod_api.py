@@ -49,7 +49,7 @@ if TYPE_CHECKING:
 _BUFSIZE_NOT_SET = object()
 
 
-def run(
+def run(  # noqa: C901
     cls: type[RunningProcess],
     args: str | list[str],
     *,

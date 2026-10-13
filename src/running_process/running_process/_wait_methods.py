@@ -96,7 +96,7 @@ def wait(
         raise
 
 
-def _wait_impl(
+def _wait_impl(  # noqa: C901
     process: RunningProcess,
     echo: bool | EchoCallback = False,
     timeout: float | None = None,

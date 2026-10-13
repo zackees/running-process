@@ -83,7 +83,7 @@ class ProcessWatch:
     cooldown_seconds: float = 0.0
     label: str = ""
 
-    def __post_init__(self) -> None:
+    def __post_init__(self) -> None:  # noqa: C901
         if self._kind not in {"spawn", "exec", "exit", "failure"}:
             raise ProcessWatchConfigurationError(f"unknown watch kind: {self._kind!r}")
         if self.limit is not None and (

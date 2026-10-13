@@ -57,7 +57,7 @@ def supervised_command(python: Path, *command: str) -> list[str]:
     ]
 
 
-def main() -> int:
+def main() -> int:  # noqa: C901
     activate, _ = load_env_helpers()
     activate()
     python = repo_python()
@@ -191,9 +191,7 @@ def main() -> int:
                 "ruff",
                 "check",
                 "--fix",
-                "src",
-                "tests",
-                "ci",
+                ".",
             )
         )
         != 0

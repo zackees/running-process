@@ -122,6 +122,7 @@ fn parsing_covers_valid_variants_defaults_and_validation_errors() {
 }
 
 #[test]
+#[expect(clippy::too_many_lines, reason = "baseline, zackees/ci.yml#229")]
 fn event_conversion_covers_every_record_shape() {
     pyo3::Python::initialize();
     pyo3::Python::attach(|py| {

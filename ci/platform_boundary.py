@@ -590,7 +590,7 @@ def artifact_zone_violations() -> list[str]:
     return failures
 
 
-def zone_text_violations(zone: ArtifactZone, path: str, text: str) -> list[str]:
+def zone_text_violations(zone: ArtifactZone, path: str, text: str) -> list[str]:  # noqa: C901
     """Hold one source text to one zone's contract.
 
     Kept pure -- text in, findings out -- so the contract can be exercised

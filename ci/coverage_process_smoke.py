@@ -333,7 +333,7 @@ def exercise_live_v2_broker(binary: Path, *, env: dict[str, str]) -> None:
                 loop.communicate(timeout=5)
 
 
-def exercise_probe_cli(daemon_binary: Path, cli_binary: Path) -> None:
+def exercise_probe_cli(daemon_binary: Path, cli_binary: Path) -> None:  # noqa: C901
     """Query a real isolated probe daemon through socket and HTTP transports."""
     # The probe endpoint is a Unix-domain socket. GitHub's TMPDIR lives below a
     # long workspace path, which can push the generated endpoint past

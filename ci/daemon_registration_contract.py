@@ -4,13 +4,14 @@ from __future__ import annotations
 
 import os
 import re
-import subprocess
 import sys
+import tempfile
 from collections.abc import Mapping
 from pathlib import Path
 
 import tomllib
 
+from ci import consumer_contract
 from ci.soldr import cargo_command
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -55,7 +56,6 @@ FORBIDDEN_PACKAGES = {
     "tracing-subscriber",
 }
 CONSUMER_ROOT = ROOT / "crates" / "running-process" / "tests" / "daemon-registration-consumer"
-CONSUMER_TARGET_DIR = ROOT / "target" / "daemon-registration-consumer-contract"
 
 
 def compile_command() -> tuple[str, ...]:
@@ -108,12 +108,12 @@ def tree_command() -> tuple[str, ...]:
     )
 
 
-def external_consumer_command() -> tuple[str, ...]:
+def external_consumer_command(manifest: Path | None = None) -> tuple[str, ...]:
     return tuple(
         cargo_command(
             "check",
             "--manifest-path",
-            str(CONSUMER_ROOT / "pass" / "Cargo.toml"),
+            str(manifest if manifest is not None else CONSUMER_ROOT / "pass" / "Cargo.toml"),
         )
     )
 
@@ -202,17 +202,16 @@ def public_source_failures() -> list[str]:
 
 def run_external_consumer() -> str | None:
     environment = os.environ.copy()
-    environment["CARGO_TARGET_DIR"] = str(CONSUMER_TARGET_DIR)
-    result = subprocess.run(
-        external_consumer_command(),
-        cwd=ROOT,
-        text=True,
-        capture_output=True,
-        check=False,
-        env=environment,
+    environment["CARGO_TARGET_DIR"] = str(
+        consumer_contract.consumer_target_dir(ROOT, "daemon-registration-consumer-contract")
     )
+    with tempfile.TemporaryDirectory(prefix="running-process-consumer-") as scratch:
+        manifest = consumer_contract.stage_consumer(CONSUMER_ROOT, "pass", Path(scratch))
+        result = consumer_contract.run_command(
+            ROOT, external_consumer_command(manifest), environment
+        )
     if result.returncode:
-        return result.stdout + result.stderr or "external daemon-registration consumer failed"
+        return result.output or "external daemon-registration consumer failed"
     return None
 
 
@@ -221,25 +220,19 @@ def main() -> int:
     failures.extend(platform_manifest_failures(load_manifest(PLATFORM_MANIFEST)))
     failures.extend(public_source_failures())
     if not failures:
-        result = subprocess.run(
-            tree_command(), cwd=ROOT, text=True, capture_output=True, check=False
-        )
+        result = consumer_contract.run_command(ROOT, tree_command())
         if result.returncode:
-            failures.append(result.stderr or result.stdout)
+            failures.append(result.output)
         else:
-            failures.extend(graph_failures(result.stdout))
+            failures.extend(graph_failures(result.output))
     if not failures:
-        result = subprocess.run(
-            compile_command(), cwd=ROOT, text=True, capture_output=True, check=False
-        )
+        result = consumer_contract.run_command(ROOT, compile_command())
         if result.returncode:
-            failures.append(result.stderr or result.stdout)
+            failures.append(result.output)
     if not failures:
-        result = subprocess.run(
-            clippy_command(), cwd=ROOT, text=True, capture_output=True, check=False
-        )
+        result = consumer_contract.run_command(ROOT, clippy_command())
         if result.returncode:
-            failures.append(result.stderr or result.stdout)
+            failures.append(result.output)
     if not failures:
         if failure := run_external_consumer():
             failures.append(failure)

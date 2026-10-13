@@ -4,13 +4,15 @@ from __future__ import annotations
 
 import os
 import re
-import subprocess
 import sys
+import tempfile
 from collections.abc import Mapping
+from dataclasses import dataclass
 from pathlib import Path
 
 import tomllib
 
+from ci import consumer_contract
 from ci.soldr import cargo_command
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -49,7 +51,14 @@ FORBIDDEN_PACKAGES = {
     "tracing-subscriber",
 }
 CONSUMER_ROOT = ROOT / "crates" / "running-process" / "tests" / "frame-v1-codec-consumer"
-CONSUMER_TARGET_DIR = ROOT / "target" / "frame-v1-codec-consumer-contract"
+
+
+def consumer_target_dir() -> Path:
+    return consumer_contract.consumer_target_dir(ROOT, "frame-v1-codec-consumer-contract")
+
+
+def stage_consumer(name: str, scratch: Path) -> Path:
+    return consumer_contract.stage_consumer(CONSUMER_ROOT, name, scratch)
 
 
 def compile_command() -> tuple[str, ...]:
@@ -84,12 +93,12 @@ def tree_command() -> tuple[str, ...]:
     )
 
 
-def external_consumer_command(name: str) -> tuple[str, ...]:
+def external_consumer_command(name: str, manifest: Path | None = None) -> tuple[str, ...]:
     return tuple(
         cargo_command(
             "check",
             "--manifest-path",
-            str(CONSUMER_ROOT / name / "Cargo.toml"),
+            str(manifest if manifest is not None else CONSUMER_ROOT / name / "Cargo.toml"),
         )
     )
 
@@ -139,20 +148,13 @@ def run_external_consumer(
     name: str, *, should_succeed: bool, expected: str | None = None
 ) -> str | None:
     environment = os.environ.copy()
-    # Keep the three sequential consumer checks in one stable ignored target.
-    # Soldr's compile cache can race a short-lived temporary target while its
-    # build-script executable is still being installed; a normal CI cargo
-    # invocation is unaffected, but this keeps the local guard deterministic.
-    environment["CARGO_TARGET_DIR"] = str(CONSUMER_TARGET_DIR)
-    result = subprocess.run(
-        external_consumer_command(name),
-        cwd=ROOT,
-        text=True,
-        capture_output=True,
-        check=False,
-        env=environment,
-    )
-    output = result.stdout + result.stderr
+    environment["CARGO_TARGET_DIR"] = str(consumer_target_dir())
+    with tempfile.TemporaryDirectory(prefix="running-process-frame-consumer-") as scratch:
+        manifest = stage_consumer(name, Path(scratch))
+        result = consumer_contract.run_command(
+            ROOT, external_consumer_command(name, manifest), environment
+        )
+    output = result.output
     if (result.returncode == 0) != should_succeed:
         return output or f"external consumer {name!r} returned {result.returncode}"
     if expected is not None and expected not in output:
@@ -160,30 +162,33 @@ def run_external_consumer(
     return None
 
 
+@dataclass(frozen=True)
+class ConsumerCase:
+    name: str
+    should_succeed: bool
+    expected: str | None = None
+
+
 def main() -> int:
     failures = manifest_failures(load_manifest())
     if not failures:
-        result = subprocess.run(
-            tree_command(), cwd=ROOT, text=True, capture_output=True, check=False
-        )
+        result = consumer_contract.run_command(ROOT, tree_command())
         if result.returncode:
-            failures.append(result.stderr or result.stdout)
+            failures.append(result.output)
         else:
-            failures.extend(graph_failures(result.stdout))
+            failures.extend(graph_failures(result.output))
     if not failures:
-        result = subprocess.run(
-            compile_command(), cwd=ROOT, text=True, capture_output=True, check=False
-        )
+        result = consumer_contract.run_command(ROOT, compile_command())
         if result.returncode:
-            failures.append(result.stderr or result.stdout)
+            failures.append(result.output)
     if not failures:
-        for name, should_succeed, expected in (
-            ("pass", True, None),
-            ("fail-first-party", False, "collides with a first-party"),
-            ("fail-reserved", False, "must lie in the registered-consumer range"),
+        for case in (
+            ConsumerCase("pass", True),
+            ConsumerCase("fail-first-party", False, "collides with a first-party"),
+            ConsumerCase("fail-reserved", False, "must lie in the registered-consumer range"),
         ):
             if failure := run_external_consumer(
-                name, should_succeed=should_succeed, expected=expected
+                case.name, should_succeed=case.should_succeed, expected=case.expected
             ):
                 failures.append(failure)
     if failures:

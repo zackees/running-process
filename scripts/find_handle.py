@@ -7,7 +7,7 @@ from pathlib import Path
 import psutil
 
 
-def iter_matches(target: Path) -> list[str]:
+def iter_matches(target: Path) -> list[str]:  # noqa: C901
     resolved = target.resolve()
     needle = str(resolved).lower()
     matches: list[str] = []

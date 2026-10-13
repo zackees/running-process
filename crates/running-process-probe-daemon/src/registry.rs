@@ -323,6 +323,7 @@ impl Registry {
     ///
     /// Bounds are checked before anything is stored, and the nonce is consumed
     /// even on a successful path so it can never be reused.
+    #[expect(clippy::too_many_lines, reason = "baseline, zackees/ci.yml#229")]
     pub fn begin_register(
         &self,
         req: RegisterRequest,

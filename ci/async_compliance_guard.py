@@ -106,7 +106,7 @@ def _occurrences(symbol: str, source: str) -> int:
     return len(re.findall(rf"\b{re.escape(_token(symbol))}\b", source))
 
 
-def check() -> list[str]:
+def check() -> list[str]:  # noqa: C901
     failures: list[str] = []
     try:
         entries = _entries()

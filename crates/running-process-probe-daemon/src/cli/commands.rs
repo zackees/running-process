@@ -9,6 +9,7 @@ use crate::cli::{Cli, Command, DEFAULT_LIMIT};
 use crate::discovery::DiscoveryInfo;
 
 /// Run one subcommand and return what should be printed.
+#[expect(clippy::too_many_lines, reason = "baseline, zackees/ci.yml#229")]
 pub fn dispatch(cli: &Cli) -> Result<String, CliError> {
     let (path, info) = load_discovery(cli.discovery.as_deref())?;
 

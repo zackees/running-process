@@ -36,7 +36,7 @@ if TYPE_CHECKING:
 _PTY_READER_NATIVE_CLOSE_WAIT_SECONDS = 2.0
 
 
-def wait_for_idle(
+def wait_for_idle(  # noqa: C901
     process: PseudoTerminalProcess,
     idle_detector: IdleDetector | None = None,
     *,

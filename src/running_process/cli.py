@@ -569,7 +569,7 @@ def _stream_reader(
                 close()
 
 
-def _wait_for_child_with_activity_timeout(
+def _wait_for_child_with_activity_timeout(  # noqa: C901
     child: object,
     *,
     timeout: float | None,

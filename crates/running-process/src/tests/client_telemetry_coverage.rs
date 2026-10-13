@@ -44,6 +44,7 @@ fn write_response(stream: &mut Stream, response: DaemonResponse) {
 }
 
 #[test]
+#[expect(clippy::too_many_lines, reason = "baseline, zackees/ci.yml#229")]
 fn tee_rpc_round_trips_cover_status_and_protocol_failures() {
     let path = socket_path();
     let _ = std::fs::remove_file(&path);

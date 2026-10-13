@@ -38,6 +38,8 @@ thiserror = "2"
 # refuses bincode serialization (broker wire stays prost-only).
 [workspace.lints.clippy]
 disallowed_methods = "deny"
+cognitive_complexity = "warn"
+too_many_lines = "warn"
 
 [workspace.lints.rust]
 # Coverage builds select these repository-owned branches in binaries and

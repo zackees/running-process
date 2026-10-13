@@ -422,7 +422,7 @@ def resolve_docker(args: argparse.Namespace) -> str:
     return ensure_docker_engine_running(timeout_seconds=args.engine_timeout)
 
 
-def main(argv: list[str] | None = None) -> int:
+def main(argv: list[str] | None = None) -> int:  # noqa: C901
     args = parse_args(argv)
     dist_dir = output_dir(args.output_dir)
     try:

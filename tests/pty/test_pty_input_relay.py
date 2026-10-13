@@ -6,7 +6,6 @@ import sys
 import time
 
 import pytest
-from running_process._native import native_windows_terminal_input_bytes
 
 # NOTE: After the #151 monolith split, the symbols these tests patch live
 # in sub-modules rather than the package namespace. Aim each monkeypatch
@@ -15,6 +14,7 @@ from running_process._native import native_windows_terminal_input_bytes
 import running_process.pty._pseudo_terminal as pty_module
 import running_process.running_process._core as running_process_module
 from running_process import RunningProcess
+from running_process._native import native_windows_terminal_input_bytes
 from running_process.pty import PseudoTerminalProcess
 
 
@@ -74,7 +74,7 @@ def test_running_process_pseudo_terminal_forwards_terminal_input_relay_options(
     assert isinstance(process, FakePtyProcess)
 
 
-def test_pseudo_terminal_windows_native_input_relay_forwards_events_and_arms_idle_timeout(
+def test_pseudo_terminal_windows_native_input_relay_forwards_events_and_arms_idle_timeout(  # noqa: C901
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     captures: list[FakeCapture] = []
@@ -208,7 +208,7 @@ def test_pseudo_terminal_windows_native_process_relay_api_owns_relay_lifecycle(
     assert process._proc.stopped is True  # type: ignore[union-attr]
 
 
-def test_pseudo_terminal_windows_native_input_relay_preserves_shift_enter_vs_enter(
+def test_pseudo_terminal_windows_native_input_relay_preserves_shift_enter_vs_enter(  # noqa: C901
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     captures: list[FakeCapture] = []
