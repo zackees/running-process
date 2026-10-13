@@ -105,3 +105,130 @@ jobs:
       actions: write
       contents: read
     uses: ./.github/workflows/cache-budget.yml
+
+  # Publish metadata independently of required build jobs. Promotion preserves
+  # the original proof time and fails closed on changed trees or trust policy.
+  # Physical compiler payloads remain managed separately by setup-soldr.
+  attestations:
+    needs: [ci-mode]
+    name: Publish main ci-attestations
+    if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 3
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          repository: zackees/ci.yml
+          ref: 86b63937960d00655f7ef3752ef6f15b6b06f35b
+          path: .ci-lint
+          sparse-checkout: ci_lint
+          persist-credentials: false
+      - name: Validate and promote main attestation side entries
+        id: att
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: PYTHONPATH=.ci-lint python3 -m ci_lint attest keys --github-context --repo . --out-dir "$RUNNER_TEMP/ci-attestations" --slots 16 --github-output
+      - name: Save main attestation side entry 0
+        if: ${{ github.ref == 'refs/heads/main' && fromJSON(steps.att.outputs.count || '0') > 0 }}
+        uses: actions/cache/save@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        with:
+          path: ${{ steps.att.outputs.path_0 }}
+          key: ${{ steps.att.outputs.key_0 }}
+      - name: Save main attestation side entry 1
+        if: ${{ github.ref == 'refs/heads/main' && fromJSON(steps.att.outputs.count || '0') > 1 }}
+        uses: actions/cache/save@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        with:
+          path: ${{ steps.att.outputs.path_1 }}
+          key: ${{ steps.att.outputs.key_1 }}
+      - name: Save main attestation side entry 2
+        if: ${{ github.ref == 'refs/heads/main' && fromJSON(steps.att.outputs.count || '0') > 2 }}
+        uses: actions/cache/save@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        with:
+          path: ${{ steps.att.outputs.path_2 }}
+          key: ${{ steps.att.outputs.key_2 }}
+      - name: Save main attestation side entry 3
+        if: ${{ github.ref == 'refs/heads/main' && fromJSON(steps.att.outputs.count || '0') > 3 }}
+        uses: actions/cache/save@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        with:
+          path: ${{ steps.att.outputs.path_3 }}
+          key: ${{ steps.att.outputs.key_3 }}
+      - name: Save main attestation side entry 4
+        if: ${{ github.ref == 'refs/heads/main' && fromJSON(steps.att.outputs.count || '0') > 4 }}
+        uses: actions/cache/save@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        with:
+          path: ${{ steps.att.outputs.path_4 }}
+          key: ${{ steps.att.outputs.key_4 }}
+      - name: Save main attestation side entry 5
+        if: ${{ github.ref == 'refs/heads/main' && fromJSON(steps.att.outputs.count || '0') > 5 }}
+        uses: actions/cache/save@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        with:
+          path: ${{ steps.att.outputs.path_5 }}
+          key: ${{ steps.att.outputs.key_5 }}
+      - name: Save main attestation side entry 6
+        if: ${{ github.ref == 'refs/heads/main' && fromJSON(steps.att.outputs.count || '0') > 6 }}
+        uses: actions/cache/save@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        with:
+          path: ${{ steps.att.outputs.path_6 }}
+          key: ${{ steps.att.outputs.key_6 }}
+      - name: Save main attestation side entry 7
+        if: ${{ github.ref == 'refs/heads/main' && fromJSON(steps.att.outputs.count || '0') > 7 }}
+        uses: actions/cache/save@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        with:
+          path: ${{ steps.att.outputs.path_7 }}
+          key: ${{ steps.att.outputs.key_7 }}
+      - name: Save main attestation side entry 8
+        if: ${{ github.ref == 'refs/heads/main' && fromJSON(steps.att.outputs.count || '0') > 8 }}
+        uses: actions/cache/save@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        with:
+          path: ${{ steps.att.outputs.path_8 }}
+          key: ${{ steps.att.outputs.key_8 }}
+      - name: Save main attestation side entry 9
+        if: ${{ github.ref == 'refs/heads/main' && fromJSON(steps.att.outputs.count || '0') > 9 }}
+        uses: actions/cache/save@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        with:
+          path: ${{ steps.att.outputs.path_9 }}
+          key: ${{ steps.att.outputs.key_9 }}
+      - name: Save main attestation side entry 10
+        if: ${{ github.ref == 'refs/heads/main' && fromJSON(steps.att.outputs.count || '0') > 10 }}
+        uses: actions/cache/save@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        with:
+          path: ${{ steps.att.outputs.path_10 }}
+          key: ${{ steps.att.outputs.key_10 }}
+      - name: Save main attestation side entry 11
+        if: ${{ github.ref == 'refs/heads/main' && fromJSON(steps.att.outputs.count || '0') > 11 }}
+        uses: actions/cache/save@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        with:
+          path: ${{ steps.att.outputs.path_11 }}
+          key: ${{ steps.att.outputs.key_11 }}
+      - name: Save main attestation side entry 12
+        if: ${{ github.ref == 'refs/heads/main' && fromJSON(steps.att.outputs.count || '0') > 12 }}
+        uses: actions/cache/save@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        with:
+          path: ${{ steps.att.outputs.path_12 }}
+          key: ${{ steps.att.outputs.key_12 }}
+      - name: Save main attestation side entry 13
+        if: ${{ github.ref == 'refs/heads/main' && fromJSON(steps.att.outputs.count || '0') > 13 }}
+        uses: actions/cache/save@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        with:
+          path: ${{ steps.att.outputs.path_13 }}
+          key: ${{ steps.att.outputs.key_13 }}
+      - name: Save main attestation side entry 14
+        if: ${{ github.ref == 'refs/heads/main' && fromJSON(steps.att.outputs.count || '0') > 14 }}
+        uses: actions/cache/save@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        with:
+          path: ${{ steps.att.outputs.path_14 }}
+          key: ${{ steps.att.outputs.key_14 }}
+      - name: Save main attestation side entry 15
+        if: ${{ github.ref == 'refs/heads/main' && fromJSON(steps.att.outputs.count || '0') > 15 }}
+        uses: actions/cache/save@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        with:
+          path: ${{ steps.att.outputs.path_15 }}
+          key: ${{ steps.att.outputs.key_15 }}
