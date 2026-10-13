@@ -1,5 +1,5 @@
 # Run from a clean committed tree with ci-lint pinned in ci/local_gate.py:
-# uvx --from git+https://github.com/zackees/ci.yml@86b63937960d00655f7ef3752ef6f15b6b06f35b ci-lint local-gate run
+# uvx --from git+https://github.com/zackees/ci.yml@ef98004c3ac1c246428f1498f741b44eb9e65b25 ci-lint local-gate run
 # The helper replays the actual Linux quick workflow through published Bosn.
 # No product tests run on the developer host; exact source and executed steps
 # are required before the outer ci-lint command stamps an attestation.

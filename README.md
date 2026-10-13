@@ -594,7 +594,7 @@ clean worktree on a native Linux x64 host with Docker and published Bosn
 0.1.12 or newer available:
 
 ```bash
-uvx --from git+https://github.com/zackees/ci.yml@86b63937960d00655f7ef3752ef6f15b6b06f35b ci-lint local-gate run
+uvx --from git+https://github.com/zackees/ci.yml@ef98004c3ac1c246428f1498f741b44eb9e65b25 ci-lint local-gate run
 ```
 
 The helper runs the existing Linux quick workflow through Bosn's released
