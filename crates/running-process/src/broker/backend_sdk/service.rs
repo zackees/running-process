@@ -27,7 +27,7 @@ use std::ffi::OsString;
 use std::fs::{File, OpenOptions, TryLockError};
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender, SyncSender, TrySendError};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -51,6 +51,7 @@ const READ_POLL: Duration = Duration::from_millis(100);
 const RETRY_MIN: Duration = Duration::from_millis(50);
 const RETRY_MAX: Duration = Duration::from_secs(1);
 const REPLY_BUFFER_FACTOR: usize = 4;
+const CLOSE_DRAIN: Duration = Duration::from_secs(2);
 
 /// Errors from [`ServiceSpec`] validation and [`ServiceServer`] startup.
 #[derive(Debug, thiserror::Error)]
@@ -311,6 +312,7 @@ pub struct ServiceServer {
     requests: Mutex<Receiver<ServiceRequest>>,
     stop: Arc<AtomicBool>,
     accept: Mutex<Option<thread::JoinHandle<()>>>,
+    connections: Arc<AtomicUsize>,
 }
 
 impl ServiceServer {
@@ -354,6 +356,8 @@ impl ServiceServer {
             not_legacy as fn(&[u8]) -> LegacyClassification,
         ));
         let accept_stop = Arc::clone(&stop);
+        let connections = Arc::new(AtomicUsize::new(0));
+        let accept_connections = Arc::clone(&connections);
         let accept = thread::Builder::new()
             .name(format!("rp-svc-accept-{}", spec.name))
             .spawn(move || {
@@ -366,9 +370,18 @@ impl ServiceServer {
                     }
                     let mux = Arc::clone(&mux);
                     let tx = tx.clone();
-                    let _ = thread::Builder::new()
+                    let stop = Arc::clone(&accept_stop);
+                    let live = Arc::clone(&accept_connections);
+                    live.fetch_add(1, Ordering::AcqRel);
+                    let spawned = thread::Builder::new()
                         .name("rp-svc-conn".to_string())
-                        .spawn(move || serve_connection(stream, &mux, &tx));
+                        .spawn(move || {
+                            serve_connection(stream, &mux, &tx, &stop);
+                            live.fetch_sub(1, Ordering::AcqRel);
+                        });
+                    if spawned.is_err() {
+                        accept_connections.fetch_sub(1, Ordering::AcqRel);
+                    }
                 }
             })
             .map_err(io_err)?;
@@ -378,6 +391,7 @@ impl ServiceServer {
             requests: Mutex::new(rx),
             stop,
             accept: Mutex::new(Some(accept)),
+            connections,
         })
     }
 
@@ -430,6 +444,13 @@ impl ServiceServer {
         if let Some(accept) = accept {
             let _ = accept.join();
         }
+        // A Windows pipe name stays taken while any connected instance is
+        // open, so the endpoint is only released once every connection
+        // thread has noticed `stop` and dropped its handle (bounded).
+        let deadline = Instant::now() + CLOSE_DRAIN;
+        while self.connections.load(Ordering::Acquire) > 0 && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(5));
+        }
     }
 }
 
@@ -437,6 +458,13 @@ impl Drop for ServiceServer {
     fn drop(&mut self) {
         self.close();
     }
+}
+
+fn is_poll_timeout(error: &io::Error) -> bool {
+    matches!(
+        error.kind(),
+        io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut | io::ErrorKind::Interrupted
+    )
 }
 
 fn not_legacy(_buf: &[u8]) -> LegacyClassification {
@@ -447,20 +475,30 @@ fn serve_connection(
     stream: crate::platform::ipc::Stream,
     mux: &BackendEndpointMux<fn(&[u8]) -> LegacyClassification>,
     requests: &Sender<ServiceRequest>,
+    stop: &AtomicBool,
 ) {
     let Ok(writer) = stream.try_clone() else {
         return;
     };
+    // Wake periodically so a closing server can drop this connection.
+    let _ = stream.set_recv_timeout(Some(READ_POLL));
     let writer: SharedWriter = Arc::new(Mutex::new(writer));
     let mut reader = stream;
     let mut buf: Vec<u8> = Vec::new();
     let mut chunk = vec![0u8; 64 * 1024];
     loop {
         match mux.poll(&buf) {
-            Ok(MuxPoll::NeedMoreBytes) => match reader.read(&mut chunk) {
-                Ok(0) | Err(_) => return,
-                Ok(n) => buf.extend_from_slice(&chunk[..n]),
-            },
+            Ok(MuxPoll::NeedMoreBytes) => {
+                if stop.load(Ordering::Acquire) {
+                    return;
+                }
+                match reader.read(&mut chunk) {
+                    Ok(0) => return,
+                    Ok(n) => buf.extend_from_slice(&chunk[..n]),
+                    Err(error) if is_poll_timeout(&error) => {}
+                    Err(_) => return,
+                }
+            }
             Ok(MuxPoll::ProbeAnswered { reply, consumed }) => {
                 buf.drain(..consumed);
                 let Ok(mut w) = writer.lock() else { return };
@@ -908,13 +946,7 @@ fn read_replies(
         match reader.read(&mut chunk) {
             Ok(0) => break,
             Ok(n) => buf.extend_from_slice(&chunk[..n]),
-            Err(error)
-                if matches!(
-                    error.kind(),
-                    io::ErrorKind::WouldBlock
-                        | io::ErrorKind::TimedOut
-                        | io::ErrorKind::Interrupted
-                ) => {}
+            Err(error) if is_poll_timeout(&error) => {}
             Err(_) => break,
         }
     }
