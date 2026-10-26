@@ -107,7 +107,7 @@ def _brokered_backend_ui_test_command() -> list[str]:
         "broker",
         "-E",
         "test(/^brokered_backend_ui::/)",
-        "--no-capture",
+        "--no-capture",  # ci-lint: allow RUST-017 one trybuild test; nothing to serialize
     )
 
 
@@ -883,7 +883,7 @@ def main(argv: list[str] | None = None) -> int:
                 # execution (5+ min of the CI critical path when it was on);
                 # failure-output = "immediate-final" already prints a failing
                 # or timed-out test's output.
-                cargo_test_args.append("--no-capture")
+                cargo_test_args.append("--no-capture")  # ci-lint: allow RUST-017 local-debug opt-in
             if run(cargo_test_args) != 0:
                 return 1
 
