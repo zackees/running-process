@@ -202,5 +202,12 @@ fn inside_env_module(cx: &LateContext<'_>, module: DefId) -> bool {
 
 #[test]
 fn ui() {
+    // dylint_testing builds this library with a nested `cargo build` and then
+    // loads it from `<target-dir>/debug/`. On Windows `soldr cargo` exports
+    // CARGO_BUILD_TARGET (its MSVC-default policy), which the nested build
+    // inherits and which moves the library to `<target-dir>/<triple>/debug/`,
+    // so the fixture failed with "could not read ...dll". The lint library is
+    // a host cdylib, so building it for the host is always correct.
+    std::env::remove_var("CARGO_BUILD_TARGET");
     dylint_testing::ui_test(env!("CARGO_PKG_NAME"), "ui");
 }
