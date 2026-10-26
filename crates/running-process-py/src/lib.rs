@@ -27,6 +27,7 @@ mod pty_buffer;
 mod pty_process;
 mod py_native_process;
 mod registry;
+mod service;
 mod signal_bool;
 mod terminal_input;
 mod window_icon;
@@ -69,6 +70,9 @@ pub(crate) use process_tree::{
 pub(crate) use pty_buffer::NativePtyBuffer;
 pub(crate) use pty_process::NativePtyProcess;
 pub(crate) use py_native_process::PyNativeProcess;
+pub(crate) use service::{
+    native_service_paths, NativeServiceClient, NativeServiceRequest, NativeServiceServer,
+};
 pub(crate) use signal_bool::NativeSignalBool;
 pub(crate) use terminal_input::{NativeTerminalInput, NativeTerminalInputEvent};
 pub(crate) use window_icon::{
@@ -93,6 +97,10 @@ fn _native(_py: Python<'_>, module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<NativePtyProcess>()?;
     module.add_class::<NativeProcessMetrics>()?;
     module.add_class::<NativeSignalBool>()?;
+    module.add_class::<NativeServiceServer>()?;
+    module.add_class::<NativeServiceRequest>()?;
+    module.add_class::<NativeServiceClient>()?;
+    module.add_function(wrap_pyfunction!(native_service_paths, module)?)?;
     module.add_class::<NativeIdleDetector>()?;
     module.add_class::<NativePtyBuffer>()?;
     module.add_class::<NativeTerminalInput>()?;

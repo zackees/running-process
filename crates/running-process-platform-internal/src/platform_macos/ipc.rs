@@ -202,6 +202,22 @@ impl Stream {
         interprocess::local_socket::traits::Stream::set_recv_timeout(&self.0, timeout)
     }
 
+    /// Make a blocked read return at least every `interval` so the reading
+    /// thread can notice it should stop. Returns `true` when the transport
+    /// cannot do that and the caller must instead consult
+    /// [`Self::bytes_available`] before each read; here a receive timeout
+    /// does the job, so it returns `false`.
+    pub fn set_interruptible_reads(&self, interval: std::time::Duration) -> io::Result<bool> {
+        self.set_recv_timeout(Some(interval))?;
+        Ok(false)
+    }
+
+    /// Bytes readable right now without blocking, where the transport can
+    /// say; `None` here, where reads honour a timeout instead.
+    pub fn bytes_available(&self) -> io::Result<Option<usize>> {
+        Ok(None)
+    }
+
     /// Consume the stream and hand back the descriptor that backs it.
     ///
     /// The transfer of ownership is the point: a caller that wants to run its

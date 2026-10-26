@@ -1735,3 +1735,168 @@ rust_sync = "sync_kill_tree_terminates_the_started_child"
 rust_async = "missing_pid_is_a_successful_noop_on_the_async_form"
 python_sync = "test_terminate_process_tree_matches_the_sync_helper_on_a_dead_pid"
 python_async = "test_terminate_process_tree_ends_a_real_child"
+
+# Supervised services (running_process_service / backend_sdk::service). The
+# client is non-blocking by construction -- every call touches only an
+# in-memory queue -- so there is no async twin to keep in step; an asyncio
+# caller polls try_recv exactly as a timer-driven one does.
+
+[[row]]
+id = "rust-service-client.connect"
+surface = "rust-service-client"
+member = "connect"
+status = "implemented"
+rust_sync = "round_trip_and_single_instance"
+rust_async = "n/a: returns at once; the supervisor thread does all I/O"
+python_sync = "test_round_trip_matches_reply_to_request_id"
+python_async = "n/a: ServiceClient.connect never blocks, so asyncio callers use it directly"
+
+[[row]]
+id = "rust-service-client.state"
+surface = "rust-service-client"
+member = "state"
+status = "implemented"
+rust_sync = "round_trip_and_single_instance"
+rust_async = "n/a: an atomic load"
+python_sync = "test_send_fails_fast_when_service_is_down"
+python_async = "n/a: an atomic load"
+
+[[row]]
+id = "rust-service-client.send"
+surface = "rust-service-client"
+member = "send"
+status = "implemented"
+rust_sync = "send_refuses_immediately_without_a_service"
+rust_async = "n/a: fail-fast try_send; never waits"
+python_sync = "test_send_fails_fast_when_queue_is_full"
+python_async = "n/a: fail-fast try_send; never waits"
+
+[[row]]
+id = "rust-service-client.try_recv"
+surface = "rust-service-client"
+member = "try_recv"
+status = "implemented"
+rust_sync = "round_trip_and_single_instance"
+rust_async = "n/a: polls an in-memory queue"
+python_sync = "test_out_of_order_replies_are_matched_by_id"
+python_async = "n/a: polls an in-memory queue"
+
+[[row]]
+id = "rust-service-client.close"
+surface = "rust-service-client"
+member = "close"
+status = "implemented"
+rust_sync = "close_releases_endpoint_and_stops_client"
+rust_async = "n/a: sets a flag and detaches the supervisor"
+python_sync = "test_client_close_never_waits"
+python_async = "n/a: sets a flag and detaches the supervisor"
+
+[[row]]
+id = "rust-service-server.bind"
+surface = "rust-service-server"
+member = "bind"
+status = "implemented"
+rust_sync = "round_trip_and_single_instance"
+rust_async = "n/a: a service process binds once at startup on its own thread"
+python_sync = "test_second_server_is_refused"
+python_async = "n/a: a service process binds once at startup on its own thread"
+
+[[row]]
+id = "rust-service-server.spec"
+surface = "rust-service-server"
+member = "spec"
+status = "implemented"
+rust_sync = "close_releases_endpoint_and_stops_client"
+rust_async = "n/a: a field accessor"
+python_sync = "test_server_close_releases_the_endpoint"
+python_async = "n/a: a field accessor"
+
+[[row]]
+id = "rust-service-server.recv"
+surface = "rust-service-server"
+member = "recv"
+status = "implemented"
+rust_sync = "round_trip_and_single_instance"
+rust_async = "n/a: service workers are threads; recv takes a timeout"
+python_sync = "test_round_trip_matches_reply_to_request_id"
+python_async = "n/a: service workers are threads; recv takes a timeout"
+
+[[row]]
+id = "rust-service-server.close"
+surface = "rust-service-server"
+member = "close"
+status = "implemented"
+rust_sync = "close_releases_endpoint_and_stops_client"
+rust_async = "n/a: one-shot teardown"
+python_sync = "test_server_close_releases_the_endpoint"
+python_async = "n/a: one-shot teardown"
+
+[[row]]
+id = "python-service-client.connect"
+surface = "python-service-client"
+member = "connect"
+status = "implemented"
+rust_sync = "round_trip_and_single_instance"
+rust_async = "n/a: returns at once; the supervisor thread does all I/O"
+python_sync = "test_client_spawns_service_and_respawns_after_crash"
+python_async = "n/a: never blocks, so asyncio callers use it directly"
+
+[[row]]
+id = "python-service-client.state"
+surface = "python-service-client"
+member = "state"
+status = "implemented"
+rust_sync = "round_trip_and_single_instance"
+rust_async = "n/a: an atomic load"
+python_sync = "test_server_restart_is_recovered_without_new_client"
+python_async = "n/a: an atomic load"
+
+[[row]]
+id = "python-service-client.send"
+surface = "python-service-client"
+member = "send"
+status = "implemented"
+rust_sync = "send_refuses_immediately_without_a_service"
+rust_async = "n/a: fail-fast; never waits"
+python_sync = "test_send_fails_fast_when_service_is_down"
+python_async = "n/a: fail-fast; never waits"
+
+[[row]]
+id = "python-service-client.try_recv"
+surface = "python-service-client"
+member = "try_recv"
+status = "implemented"
+rust_sync = "round_trip_and_single_instance"
+rust_async = "n/a: polls an in-memory queue"
+python_sync = "test_out_of_order_replies_are_matched_by_id"
+python_async = "n/a: polls an in-memory queue"
+
+[[row]]
+id = "python-service-client.close"
+surface = "python-service-client"
+member = "close"
+status = "implemented"
+rust_sync = "close_releases_endpoint_and_stops_client"
+rust_async = "n/a: sets a flag"
+python_sync = "test_client_close_never_waits"
+python_async = "n/a: sets a flag"
+
+[[row]]
+id = "python-service-server.recv"
+surface = "python-service-server"
+member = "recv"
+status = "implemented"
+rust_sync = "round_trip_and_single_instance"
+rust_async = "n/a: service workers are threads; recv takes a timeout"
+python_sync = "test_round_trip_matches_reply_to_request_id"
+python_async = "n/a: service workers are threads; recv takes a timeout"
+
+[[row]]
+id = "python-service-server.close"
+surface = "python-service-server"
+member = "close"
+status = "implemented"
+rust_sync = "close_releases_endpoint_and_stops_client"
+rust_async = "n/a: one-shot teardown"
+python_sync = "test_server_close_releases_the_endpoint"
+python_async = "n/a: one-shot teardown"

@@ -104,3 +104,18 @@
     pub fn wait_for_reader_closed_impl(&self, timeout: Option<f64>) -> bool
     pub fn wait_impl(&self, timeout: Option<f64>) -> Result<i32, PtyError>
     pub fn write_impl(&self, data: &[u8], submit: bool) -> Result<(), PtyError>
+
+## PollingFrameClient
+
+    pub fn close(&self)
+    pub fn connect(spec: ServiceSpec, queue_depth: usize) -> io::Result<Self>
+    pub fn send(&self, payload: Vec<u8>) -> Result<u64, SendError>
+    pub fn state(&self) -> ServiceState
+    pub fn try_recv(&self) -> Option<ServiceReply>
+
+## ServiceServer
+
+    pub fn bind(spec: ServiceSpec) -> Result<Self, ServiceError>
+    pub fn close(&self)
+    pub fn recv(&self, timeout: Option<Duration>) -> Option<ServiceRequest>
+    pub fn spec(&self) -> &ServiceSpec

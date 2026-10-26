@@ -300,6 +300,42 @@ This table is generated from `docs/async_api_parity.toml` by `ci.parity_manifest
 | `terminate` | implemented | n/a: InteractiveProcess is a Python-only dispatch facade; Rust exposes the pipe and PTY engines separately, tracked on their own surfaces | n/a: InteractiveProcess is a Python-only dispatch facade; Rust exposes the pipe and PTY engines separately, tracked on their own surfaces | `test_sync_terminate_ends_the_child_like_kill` | `test_async_terminate_ends_the_child_like_kill` |
 | `wait` | implemented | n/a: InteractiveProcess is a Python-only dispatch facade; Rust exposes the pipe and PTY engines separately, tracked on their own surfaces | n/a: InteractiveProcess is a Python-only dispatch facade; Rust exposes the pipe and PTY engines separately, tracked on their own surfaces | `test_sync_poll_reports_none_before_start` | `test_exit_status_agrees_with_poll` |
 
+### Rust `PollingFrameClient`
+
+| Member | Status | Rust sync | Rust async | Python sync | Python async |
+| --- | --- | --- | --- | --- | --- |
+| `close` | implemented | `close_releases_endpoint_and_stops_client` | n/a: sets a flag and detaches the supervisor | `test_client_close_never_waits` | n/a: sets a flag and detaches the supervisor |
+| `connect` | implemented | `round_trip_and_single_instance` | n/a: returns at once; the supervisor thread does all I/O | `test_round_trip_matches_reply_to_request_id` | n/a: ServiceClient.connect never blocks, so asyncio callers use it directly |
+| `send` | implemented | `send_refuses_immediately_without_a_service` | n/a: fail-fast try_send; never waits | `test_send_fails_fast_when_queue_is_full` | n/a: fail-fast try_send; never waits |
+| `state` | implemented | `round_trip_and_single_instance` | n/a: an atomic load | `test_send_fails_fast_when_service_is_down` | n/a: an atomic load |
+| `try_recv` | implemented | `round_trip_and_single_instance` | n/a: polls an in-memory queue | `test_out_of_order_replies_are_matched_by_id` | n/a: polls an in-memory queue |
+
+### Rust `ServiceServer`
+
+| Member | Status | Rust sync | Rust async | Python sync | Python async |
+| --- | --- | --- | --- | --- | --- |
+| `bind` | implemented | `round_trip_and_single_instance` | n/a: a service process binds once at startup on its own thread | `test_second_server_is_refused` | n/a: a service process binds once at startup on its own thread |
+| `close` | implemented | `close_releases_endpoint_and_stops_client` | n/a: one-shot teardown | `test_server_close_releases_the_endpoint` | n/a: one-shot teardown |
+| `recv` | implemented | `round_trip_and_single_instance` | n/a: service workers are threads; recv takes a timeout | `test_round_trip_matches_reply_to_request_id` | n/a: service workers are threads; recv takes a timeout |
+| `spec` | implemented | `close_releases_endpoint_and_stops_client` | n/a: a field accessor | `test_server_close_releases_the_endpoint` | n/a: a field accessor |
+
+### Python `running_process_service.ServiceClient`
+
+| Member | Status | Rust sync | Rust async | Python sync | Python async |
+| --- | --- | --- | --- | --- | --- |
+| `close` | implemented | `close_releases_endpoint_and_stops_client` | n/a: sets a flag | `test_client_close_never_waits` | n/a: sets a flag |
+| `connect` | implemented | `round_trip_and_single_instance` | n/a: returns at once; the supervisor thread does all I/O | `test_client_spawns_service_and_respawns_after_crash` | n/a: never blocks, so asyncio callers use it directly |
+| `send` | implemented | `send_refuses_immediately_without_a_service` | n/a: fail-fast; never waits | `test_send_fails_fast_when_service_is_down` | n/a: fail-fast; never waits |
+| `state` | implemented | `round_trip_and_single_instance` | n/a: an atomic load | `test_server_restart_is_recovered_without_new_client` | n/a: an atomic load |
+| `try_recv` | implemented | `round_trip_and_single_instance` | n/a: polls an in-memory queue | `test_out_of_order_replies_are_matched_by_id` | n/a: polls an in-memory queue |
+
+### Python `running_process_service.ServiceServer`
+
+| Member | Status | Rust sync | Rust async | Python sync | Python async |
+| --- | --- | --- | --- | --- | --- |
+| `close` | implemented | `close_releases_endpoint_and_stops_client` | n/a: one-shot teardown | `test_server_close_releases_the_endpoint` | n/a: one-shot teardown |
+| `recv` | implemented | `round_trip_and_single_instance` | n/a: service workers are threads; recv takes a timeout | `test_round_trip_matches_reply_to_request_id` | n/a: service workers are threads; recv takes a timeout |
+
 ### Python module-level helpers
 
 | Member | Status | Rust sync | Rust async | Python sync | Python async |

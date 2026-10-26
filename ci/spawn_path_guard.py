@@ -204,6 +204,10 @@ ALLOWED_RUST_COMMAND_NEW = {
     # discovery and bounded termination paths. No caller input reaches them.
     Path("crates/running-process-py/src/tests/process_tree.rs"),
 
+    # Supervised services: `PollingFrameClient` builds the caller-declared
+    # service command and launches it only through `spawn::spawn_daemon`,
+    # the sanitized detached-daemon layer, under the per-service spawn lock.
+    Path("crates/running-process/src/broker/backend_sdk/service.rs"),
 }
 
 ALLOWED_RUST_SPAWN = {
@@ -450,6 +454,11 @@ ALLOWED_RUST_SPAWN = {
     # #551 slice 6e: see comment in ALLOWED_RUST_COMMAND_NEW. The
     # `.spawn()` hit is the rustdoc usage example, not production.
     Path("crates/running-process-probe/src/inject_unix.rs"),
+    # Supervised services: `thread::Builder::spawn` (threads, not processes)
+    # for the accept loop, per-connection readers, and the client supervisor
+    # and reply reader. The one process launch goes through
+    # `spawn::spawn_daemon` (see ALLOWED_RUST_COMMAND_NEW).
+    Path("crates/running-process/src/broker/backend_sdk/service.rs"),
 }
 
 ALLOWED_PORTABLE_PTY = {

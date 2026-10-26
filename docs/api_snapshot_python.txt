@@ -84,6 +84,18 @@
     subprocess_run
     terminate_process_tree
 
+## running_process_service.__all__
+
+    QueueFull
+    Reply
+    Request
+    ServiceAlreadyRunning
+    ServiceClient
+    ServiceServer
+    ServiceSpec
+    ServiceUnavailable
+    serve
+
 ## RunningProcess
 
     [classmethod] def run_streaming(cls, cmd, env=None, cwd=None, timeout=None, nice=None, stdout_callback=None)
@@ -197,3 +209,18 @@
     def start(self)
     def terminate(self)
     def wait(self, timeout=None, *, raise_on_abnormal_exit=False)
+
+## ServiceClient
+
+    [classmethod] def connect(cls, spec, *, queue_depth=64)
+    [property] def state(self)
+    def __init__(self, native)
+    def close(self)
+    def send(self, payload)
+    def try_recv(self)
+
+## ServiceServer
+
+    def __init__(self, spec)
+    def close(self)
+    def recv(self, timeout=None)
