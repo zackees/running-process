@@ -32,21 +32,25 @@ def launcher_path(target_dir: Path = Path("target")) -> Path:
     return max(candidates, key=lambda path: path.stat().st_mtime).resolve()
 
 
+# Each suite runs one exact test on a real Task Scheduler host; its output is the evidence.
+EVIDENCE_OUTPUT = "--nocapture"  # ci-lint: allow RUST-017 one-test host evidence
+
+
 def main() -> int:
     if sys.platform != "win32":
         raise SystemExit("This stage requires a real Windows Task Scheduler host")
     suites = [
         (
             ["-p", "running-process-platform-internal", "--lib"],
-            ["scheduler_error::tests", "--nocapture"],
+            ["scheduler_error::tests", EVIDENCE_OUTPUT],
         ),
         (
             ["-p", "running-process-platform-internal", "--lib"],
-            ["nonblocking_large_frame_round_trip", "--nocapture"],
+            ["nonblocking_large_frame_round_trip", EVIDENCE_OUTPUT],
         ),
         (
             ["-p", "running-process-platform-internal", "--lib"],
-            ["scheduler_launch::tests", "--include-ignored", "--nocapture"],
+            ["scheduler_launch::tests", "--include-ignored", EVIDENCE_OUTPUT],
         ),
         (
             ["-p", "running-process", "--test", "independent_spawn_windows"],
@@ -54,7 +58,7 @@ def main() -> int:
                 "--exact",
                 "scheduler_starts_and_stops_the_verified_target",
                 "--ignored",
-                "--nocapture",
+                EVIDENCE_OUTPUT,
             ],
         ),
         (
@@ -63,7 +67,7 @@ def main() -> int:
                 "--exact",
                 "platform_win::independent_spawn::job_tests::restrictive_job_scheduler_separation",
                 "--ignored",
-                "--nocapture",
+                EVIDENCE_OUTPUT,
             ],
         ),
         (
@@ -72,7 +76,7 @@ def main() -> int:
                 "--exact",
                 "platform_win::independent_spawn::job_tests::requester_teardown_preserves_independent_target",
                 "--ignored",
-                "--nocapture",
+                EVIDENCE_OUTPUT,
             ],
         ),
     ]
