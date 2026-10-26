@@ -44,9 +44,10 @@ class _Runtime(unittest.TestCase):
     def setUp(self) -> None:
         self._tmp = tempfile.TemporaryDirectory(prefix="rpsvc-")
         self.runtime = Path(self._tmp.name)
-
-    def tearDown(self) -> None:
-        self._tmp.cleanup()
+        # Cleanups run last-registered-first, after tearDown. Registering the
+        # directory first makes it the very last thing removed: a client
+        # closed in its own cleanup can no longer respawn a service into it.
+        self.addCleanup(self._tmp.cleanup)
 
     def spec(self, name: str = "svc-test", **kwargs):
         from running_process_service import ServiceSpec
@@ -255,14 +256,17 @@ class SupervisionTest(_Runtime):
         self.script = self.runtime / "service.py"
         self.script.write_text(SERVICE_SCRIPT, encoding="utf-8")
         self.pids: list[int] = []
+        # Before the directory goes, after every client is closed (clients
+        # register their close later, so it runs first): otherwise a live
+        # supervisor sees the kill and respawns a service mid-rmtree.
+        self.addCleanup(self._kill_services)
 
-    def tearDown(self) -> None:
+    def _kill_services(self) -> None:
         for pid in self.pids:
             try:
                 os.kill(pid, 9)
             except OSError:
                 pass
-        super().tearDown()
 
     def spawns(self) -> list[int]:
         log = self.runtime / "spawns.log"
