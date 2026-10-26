@@ -767,9 +767,9 @@ mod tests {
         let ranges: Vec<(u64, u64)> = file
             .sections()
             .filter(|s| match s.flags() {
-                // IMAGE_SCN_MEM_EXECUTE
+                // object 0.40 types the characteristics as `pe::SectionFlags`.
                 object::SectionFlags::Coff { characteristics } => {
-                    characteristics & 0x2000_0000 != 0
+                    characteristics.0 & object::pe::IMAGE_SCN_MEM_EXECUTE.0 != 0
                 }
                 _ => false,
             })
