@@ -67,3 +67,38 @@ path = "running_process_platform_internal::PlatformOutput::read_to_end"
 kind = "async-process-output-drain"
 blocking = false
 owner = "running-process-platform-internal"
+
+# Supervised-service client (backend_sdk::service). Each operation touches
+# only an in-memory queue or atomic; the connection, health probes and
+# respawn run on the client's own supervisor thread. Covered by
+# backend_sdk::service tests and tests/test_service.py.
+
+[[api]]
+path = "running_process::broker::backend_sdk::PollingFrameClient::connect"
+kind = "service-client-connect"
+blocking = false
+owner = "running-process"
+
+[[api]]
+path = "running_process::broker::backend_sdk::PollingFrameClient::send"
+kind = "service-client-send"
+blocking = false
+owner = "running-process"
+
+[[api]]
+path = "running_process::broker::backend_sdk::PollingFrameClient::try_recv"
+kind = "service-client-recv"
+blocking = false
+owner = "running-process"
+
+[[api]]
+path = "running_process::broker::backend_sdk::PollingFrameClient::state"
+kind = "service-client-state"
+blocking = false
+owner = "running-process"
+
+[[api]]
+path = "running_process::broker::backend_sdk::PollingFrameClient::close"
+kind = "service-client-close"
+blocking = false
+owner = "running-process"

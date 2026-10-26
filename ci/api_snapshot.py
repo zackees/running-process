@@ -45,6 +45,9 @@ HEADER = (
 )
 
 PACKAGE_INIT = Path("src/running_process/__init__.py")
+# The light top-level service package ships in the same wheel; its exports
+# are public surface too.
+SERVICE_PACKAGE_INIT = Path("src/running_process_service/__init__.py")
 
 
 # --------------------------------------------------------------------------
@@ -107,8 +110,8 @@ def _class_members(source: str, symbol: str) -> list[str]:
     raise ValueError(f"no `class {symbol}` found")
 
 
-def _exports() -> list[str]:
-    source = (ROOT / PACKAGE_INIT).read_text(encoding="utf-8")
+def _exports(init: Path = PACKAGE_INIT) -> list[str]:
+    source = (ROOT / init).read_text(encoding="utf-8")
     names = sorted(set(re.findall(r'^\s*"(\w+)",', source, re.MULTILINE)))
     return [f"    {name}" for name in names]
 
@@ -116,6 +119,8 @@ def _exports() -> list[str]:
 def render_python() -> str:
     lines = [HEADER.format(language="Python"), "## running_process.__all__", ""]
     lines.extend(_exports())
+    lines.extend(["", "## running_process_service.__all__", ""])
+    lines.extend(_exports(SERVICE_PACKAGE_INIT))
     for surface in SURFACES:
         if surface.language != "python":
             continue

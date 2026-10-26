@@ -41,6 +41,9 @@ dev = [
 manifest-path = "crates/running-process-py/Cargo.toml"
 module-name = "running_process._native"
 python-source = "src"
+# A second, light top-level package: imports the extension without running
+# running_process/__init__.py (see src/running_process_service).
+python-packages = ["running_process_service"]
 features = ["pyo3/extension-module", "pyo3/abi3-py310"]
 include = [{ path = "running_process/assets/daemon-trampoline*", format = "wheel" }]
 

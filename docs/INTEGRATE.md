@@ -6,6 +6,11 @@ regime; everything else under `docs/v1-*.md` is design rationale and
 reference. SDK API docs live on
 `running_process::broker::backend_sdk`.
 
+Writing a small service, or calling one from code that must never block
+(a UI thread, a timer-driven loop), in Python or Rust? Start from
+[`SERVICE.md`](SERVICE.md): it packages this recipe with single-instance
+bind, health probes, client-side respawn and a non-blocking client.
+
 What you get:
 
 - **Verified daemon discovery.** Clients probe your daemon with

@@ -18,6 +18,10 @@
 //!   `spawn_blocking`, exactly like [`BackendHandle::probe_with_service`]
 //!   (`running-process`'s `client` feature deliberately has no async
 //!   runtime dependency).
+//! - [`ServiceServer`] / [`PollingFrameClient`] — a supervised
+//!   single-instance service and the client that never blocks: fail-fast
+//!   `send`, polled `try_recv`, replies matched by request id, and
+//!   client-side respawn under a lock within a spawn budget.
 //! - [`write_daemon_identity_file`] / [`read_daemon_identity_file`] /
 //!   [`remove_daemon_identity_file`] — the JSON identity sidecar that
 //!   direct-daemon consumers persist at startup and probe later with
@@ -37,6 +41,8 @@ mod frame_client;
 mod frame_client_async;
 mod identity_file;
 mod mux;
+#[cfg(feature = "client")]
+mod service;
 
 #[cfg(feature = "client")]
 pub use frame_client::{FrameClient, FrameClientError};
@@ -47,3 +53,8 @@ pub use identity_file::{
     write_daemon_identity_file,
 };
 pub use mux::{BackendEndpointMux, LegacyClassification, MuxError, MuxPoll};
+#[cfg(feature = "client")]
+pub use service::{
+    PollingFrameClient, SendError, ServiceError, ServiceReply, ServiceRequest, ServiceServer,
+    ServiceSpec, ServiceState,
+};
