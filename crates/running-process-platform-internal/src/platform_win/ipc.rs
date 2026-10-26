@@ -252,6 +252,49 @@ impl Stream {
         interprocess::local_socket::traits::Stream::set_recv_timeout(&self.0, timeout)
     }
 
+    /// Make a blocked read return at least every `interval` so the reading
+    /// thread can notice it should stop. Returns `true` when the transport
+    /// cannot do that and the caller must instead consult
+    /// [`Self::bytes_available`] before each read. A pipe read ignores
+    /// receive timeouts, and non-blocking (`PIPE_NOWAIT`) mode reports "no
+    /// data" as end-of-stream, so pipes take the second path and stay
+    /// blocking.
+    pub fn set_interruptible_reads(&self, _interval: std::time::Duration) -> io::Result<bool> {
+        Ok(true)
+    }
+
+    /// Bytes readable right now without blocking (`PeekNamedPipe`). A
+    /// broken or closed pipe is reported as `Ok(Some(0))` only while it is
+    /// still connected; once the peer has gone, this returns an error.
+    pub fn bytes_available(&self) -> io::Result<Option<usize>> {
+        use std::os::windows::io::{AsHandle as _, AsRawHandle as _};
+        use windows_sys::Win32::Foundation::HANDLE;
+        use windows_sys::Win32::System::Pipes::PeekNamedPipe;
+
+        let handle = match &self.0 {
+            interprocess::local_socket::Stream::NamedPipe(stream) => {
+                stream.as_handle().as_raw_handle() as HANDLE
+            }
+        };
+        let mut available: u32 = 0;
+        // SAFETY: `handle` is a live pipe handle owned by `self` for the
+        // duration of the call; no buffer is passed, only the out-count.
+        let ok = unsafe {
+            PeekNamedPipe(
+                handle,
+                std::ptr::null_mut(),
+                0,
+                std::ptr::null_mut(),
+                &mut available,
+                std::ptr::null_mut(),
+            )
+        };
+        if ok == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(Some(available as usize))
+    }
+
     pub fn peer_identity(&self) -> io::Result<PeerIdentity> {
         self.0.peer_creds().map(peer_identity)
     }

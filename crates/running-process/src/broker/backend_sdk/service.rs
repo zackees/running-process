@@ -297,8 +297,7 @@ impl ServiceRequest {
             .writer
             .lock()
             .map_err(|_| io::Error::other("connection writer poisoned"))?;
-        stream.write_all(&wire)?;
-        stream.flush()
+        write_all_polling(&mut *stream, &wire)
     }
 }
 
@@ -460,6 +459,91 @@ impl Drop for ServiceServer {
     }
 }
 
+/// Make reads on `stream` return periodically so the reading thread can
+/// notice it should stop. Returns whether reads must be preceded by a
+/// readiness check instead (Windows pipes ignore receive timeouts; see
+/// `Stream::set_interruptible_reads`).
+fn configure_polling_reads(stream: &crate::platform::ipc::Stream) -> bool {
+    stream.set_interruptible_reads(READ_POLL).unwrap_or(false)
+}
+
+/// Write all of `buf`, riding out `WouldBlock`/`TimedOut` from a polled handle.
+fn write_all_polling<W: Write>(writer: &mut W, mut buf: &[u8]) -> io::Result<()> {
+    let mut idle = IdleBackoff::default();
+    while !buf.is_empty() {
+        match writer.write(buf) {
+            Ok(0) => return Err(io::ErrorKind::WriteZero.into()),
+            Ok(n) => {
+                idle.reset();
+                buf = &buf[n..];
+            }
+            Err(error) if is_poll_timeout(&error) => idle.force_wait(),
+            Err(error) => return Err(error),
+        }
+    }
+    loop {
+        match writer.flush() {
+            Ok(()) => return Ok(()),
+            Err(error) if is_poll_timeout(&error) => idle.force_wait(),
+            Err(error) => return Err(error),
+        }
+    }
+}
+
+/// Idle backoff for reads: 1 ms doubling to 20 ms. A read that honours a
+/// receive timeout has already waited, so `wait` sleeps only in peek mode
+/// (readiness checked before reading).
+#[derive(Default)]
+struct IdleBackoff {
+    millis: u64,
+    peek: bool,
+}
+
+impl IdleBackoff {
+    fn for_stream(peek: bool) -> Self {
+        Self { millis: 0, peek }
+    }
+
+    /// Read what is there, never blocking past one poll interval.
+    /// `Ok(None)`: nothing yet; `Ok(Some(0))`: the peer closed.
+    fn read(
+        &mut self,
+        reader: &mut crate::platform::ipc::Stream,
+        chunk: &mut [u8],
+    ) -> io::Result<Option<usize>> {
+        if self.peek && reader.bytes_available()? == Some(0) {
+            self.force_wait();
+            return Ok(None);
+        }
+        match reader.read(chunk) {
+            Ok(n) => {
+                self.reset();
+                Ok(Some(n))
+            }
+            Err(error) if is_poll_timeout(&error) => {
+                self.wait();
+                Ok(None)
+            }
+            Err(error) => Err(error),
+        }
+    }
+
+    fn reset(&mut self) {
+        self.millis = 0;
+    }
+
+    fn wait(&mut self) {
+        if self.peek {
+            self.force_wait();
+        }
+    }
+
+    fn force_wait(&mut self) {
+        self.millis = (self.millis * 2).clamp(1, 20);
+        thread::sleep(Duration::from_millis(self.millis));
+    }
+}
+
 fn is_poll_timeout(error: &io::Error) -> bool {
     matches!(
         error.kind(),
@@ -481,7 +565,7 @@ fn serve_connection(
         return;
     };
     // Wake periodically so a closing server can drop this connection.
-    let _ = stream.set_recv_timeout(Some(READ_POLL));
+    let mut idle = IdleBackoff::for_stream(configure_polling_reads(&stream));
     let writer: SharedWriter = Arc::new(Mutex::new(writer));
     let mut reader = stream;
     let mut buf: Vec<u8> = Vec::new();
@@ -492,17 +576,16 @@ fn serve_connection(
                 if stop.load(Ordering::Acquire) {
                     return;
                 }
-                match reader.read(&mut chunk) {
-                    Ok(0) => return,
-                    Ok(n) => buf.extend_from_slice(&chunk[..n]),
-                    Err(error) if is_poll_timeout(&error) => {}
-                    Err(_) => return,
+                match idle.read(&mut reader, &mut chunk) {
+                    Ok(Some(0)) | Err(_) => return,
+                    Ok(Some(n)) => buf.extend_from_slice(&chunk[..n]),
+                    Ok(None) => {}
                 }
             }
             Ok(MuxPoll::ProbeAnswered { reply, consumed }) => {
                 buf.drain(..consumed);
                 let Ok(mut w) = writer.lock() else { return };
-                if w.write_all(&reply).and_then(|()| w.flush()).is_err() {
+                if write_all_polling(&mut *w, &reply).is_err() {
                     return;
                 }
             }
@@ -855,7 +938,7 @@ impl Supervisor {
         let Ok(reader) = stream.try_clone() else {
             return;
         };
-        let _ = reader.set_recv_timeout(Some(READ_POLL));
+        let peek = configure_polling_reads(&reader);
         let mut writer = stream;
         let dead = Arc::new(AtomicBool::new(false));
         let reader_dead = Arc::clone(&dead);
@@ -863,7 +946,7 @@ impl Supervisor {
         let protocol = self.spec.payload_protocol;
         let Ok(reader_thread) = thread::Builder::new()
             .name("rp-svc-client-read".to_string())
-            .spawn(move || read_replies(reader, protocol, &reader_shared, &reader_dead))
+            .spawn(move || read_replies(reader, protocol, &reader_shared, &reader_dead, peek))
         else {
             return;
         };
@@ -882,8 +965,7 @@ impl Supervisor {
                         Frame::request(protocol, out.payload).with_request_id(out.request_id);
                     let written = encode_framed(&frame)
                         .map_err(io::Error::other)
-                        .and_then(|wire| writer.write_all(&wire))
-                        .and_then(|()| writer.flush());
+                        .and_then(|wire| write_all_polling(&mut writer, &wire));
                     if written.is_err() {
                         break;
                     }
@@ -911,9 +993,11 @@ fn read_replies(
     protocol: u32,
     shared: &Shared,
     dead: &AtomicBool,
+    peek: bool,
 ) {
     let mut buf: Vec<u8> = Vec::new();
     let mut chunk = vec![0u8; 64 * 1024];
+    let mut idle = IdleBackoff::for_stream(peek);
     loop {
         if dead.load(Ordering::Acquire) || shared.stop.load(Ordering::Acquire) {
             break;
@@ -943,11 +1027,10 @@ fn read_replies(
             Ok(None) => {}
             Err(_) => break,
         }
-        match reader.read(&mut chunk) {
-            Ok(0) => break,
-            Ok(n) => buf.extend_from_slice(&chunk[..n]),
-            Err(error) if is_poll_timeout(&error) => {}
-            Err(_) => break,
+        match idle.read(&mut reader, &mut chunk) {
+            Ok(Some(0)) | Err(_) => break,
+            Ok(Some(n)) => buf.extend_from_slice(&chunk[..n]),
+            Ok(None) => {}
         }
     }
     dead.store(true, Ordering::Release);
