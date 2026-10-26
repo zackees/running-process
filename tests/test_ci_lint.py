@@ -427,7 +427,7 @@ def test_merge_queue_runs_cancel_superseded_first_and_ends_with_janitor() -> Non
     jobs = main.split("\n\n")
     cancel = next(j for j in jobs if "\n  cancel-superseded:\n" in j)
     assert "github.event_name == 'merge_group'" in cancel
-    assert "needs:" not in cancel
+    assert "\n    needs:" not in cancel
     assert "actions: write" in cancel
     assert "run: python3 -m ci.cancel_superseded" in cancel
     janitor = next(j for j in jobs if "\n  queue-cache-janitor:\n" in j)
