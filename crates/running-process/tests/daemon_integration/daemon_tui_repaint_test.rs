@@ -100,13 +100,33 @@ fn start_server(scope: &str) -> (tokio::task::JoinHandle<()>, String) {
 /// Drain the attachment, concatenating every data frame into a single
 /// Vec<u8> for byte-exact assertions. Stops when the deadline passes
 /// or a frame other than `Data` arrives (e.g. SessionExited).
+/// Answer every cursor-position query (`ESC[6n`) seen so far, as the real
+/// terminal behind an attachment would.
+///
+/// Windows ConPTY (`PSEUDOCONSOLE_INHERIT_CURSOR`) opens each session with
+/// that query and forwards none of the child's output until it is answered,
+/// so a client that never answers sees a backlog of just `ESC[6n` (#1337).
+/// Unix PTYs never ask, so this is a no-op there.
+fn answer_cursor_queries(att: &mut PtyAttachment, out: &[u8], answered: &mut usize) {
+    let asked = out.windows(4).filter(|w| *w == b"\x1b[6n").count();
+    while *answered < asked {
+        let _ = att.send_input(b"\x1b[1;1R");
+        *answered += 1;
+    }
+}
+
 fn drain_attachment(att: &mut PtyAttachment, deadline: Instant) -> Vec<u8> {
     let mut out = att.initial_backlog.clone();
+    let mut answered = 0;
+    answer_cursor_queries(att, &out, &mut answered);
     while Instant::now() < deadline {
         let remaining = deadline.saturating_duration_since(Instant::now());
         match att.recv_frame_with_timeout(remaining) {
             Ok(Some(frame)) => match frame.frame {
-                Some(StreamOneof::Output(bytes)) => out.extend_from_slice(&bytes),
+                Some(StreamOneof::Output(bytes)) => {
+                    out.extend_from_slice(&bytes);
+                    answer_cursor_queries(att, &out, &mut answered);
+                }
                 // `MissedBytes` reports that the session ring dropped output
                 // because this attachment fell behind. The daemon marks it
                 // non-final (`encode_outbound`), so the stream continues and
