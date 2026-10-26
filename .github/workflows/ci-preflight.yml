@@ -346,7 +346,10 @@ jobs:
     name: dylint (${{ inputs.label }})
     if: ${{ inputs.dylint }}
     runs-on: ${{ inputs.os }}
-    timeout-minutes: 30
+    # Windows x86 with a cold compiler-unit cache spends ~20 min in each of the
+    # two workspace passes (2026-10-26, PR #1337), and that cache is saved
+    # only from main, so a PR lane is always cold. 30 cancelled the second pass.
+    timeout-minutes: 60
     env:
       SOLDR_DYLINT_DRIVER_FALLBACK: "off"
       # The lint crates select dylint-link through cfg(all()). Soldr's
