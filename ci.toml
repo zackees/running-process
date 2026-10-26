@@ -183,7 +183,9 @@ platform-selector = "crates/running-process-platform-internal/src/lib.rs"
 # PyPI) and ci.yml's / cache-budget.yml's `enforce-cache-budget` (actions:
 # write, to retire entries). Top-level permissions are capped at
 # contents:read + actions:read; any wider per-job grant must be listed here.
-permissions = { "id-token: write" = ["publish-pypi"], "actions: write" = ["enforce-cache-budget"] }
+# The merge queue's cancel-superseded and queue-cache-janitor jobs (GEN-022,
+# forge-ci/ci.yml#409/#405) also take actions: write.
+permissions = { "id-token: write" = ["publish-pypi"], "actions: write" = ["enforce-cache-budget", "cancel-superseded", "queue-cache-janitor"] }
 platform-code     = ["crates/running-process-platform-internal/src/**", "src/running_process/platforms/**"]
 
 # ── Publish ──────────────────────────────────────────────────────────────────
