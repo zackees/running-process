@@ -47,9 +47,7 @@ def test_aggregate_check_fails_when_a_requested_dylint_did_not_pass() -> None:
 
 
 def test_default_pr_path_does_not_run_macos_or_windows_dylint() -> None:
-    main = (ci_lint.ROOT / ".github" / "workflows" / "ci.yml").read_text(
-        encoding="utf-8"
-    )
+    main = (ci_lint.ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
     jobs = main.split("\n\n")
     for name in ("ci-macos.yml", "ci-windows.yml"):
         job = next(j for j in jobs if f"uses: ./.github/workflows/{name}" in j)
@@ -75,9 +73,7 @@ def test_local_lint_runs_both_dylint_libraries_in_ci_order() -> None:
     assert f'cargo-dylint-version: "{dylint_gate.DYLINT_VERSION}"' in reusable
 
 
-def test_dylint_gate_skips_without_toolchain_and_fails_when_required(
-    monkeypatch, capsys
-) -> None:
+def test_dylint_gate_skips_without_toolchain_and_fails_when_required(monkeypatch, capsys) -> None:
     from ci import dylint_gate
 
     monkeypatch.setattr(dylint_gate, "missing_tools", lambda: ["install-it"])
@@ -109,8 +105,7 @@ def test_dylint_gate_runs_every_command_and_stops_at_the_first_violation(
     monkeypatch.setattr(
         dylint_gate.subprocess,
         "run",
-        lambda command, **kwargs: seen.append(command)
-        or type("Result", (), {"returncode": 0})(),
+        lambda command, **kwargs: seen.append(command) or type("Result", (), {"returncode": 0})(),
     )
     assert dylint_gate.main() == 0
     assert seen == dylint_gate.commands()
@@ -423,3 +418,30 @@ def test_main_runs_lint_commands_through_running_process_cli(monkeypatch) -> Non
         ],
         [python, "-m", "ci.dylint_gate"],
     ]
+
+
+def test_merge_queue_runs_cancel_superseded_first_and_ends_with_janitor() -> None:
+    """GEN-022 (forge-ci/ci.yml#405/#409): the queue's housekeeping shape."""
+    main = (ci_lint.ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+    assert "  merge_group:\n    types: [checks_requested]\n" in main
+    jobs = main.split("\n\n")
+    cancel = next(j for j in jobs if "\n  cancel-superseded:\n" in j)
+    assert "github.event_name == 'merge_group'" in cancel
+    assert "needs:" not in cancel
+    assert "actions: write" in cancel
+    assert "run: python3 -m ci.cancel_superseded" in cancel
+    janitor = next(j for j in jobs if "\n  queue-cache-janitor:\n" in j)
+    assert "always() && github.event_name == 'merge_group'" in janitor
+    assert "group: cache-janitor\n      cancel-in-progress: false" in janitor
+    assert "run: python3 -m ci_lint cache janitor --repo ." in janitor
+    ids = {
+        line.strip().rstrip(":")
+        for line in main.split("\njobs:\n", 1)[1].splitlines()
+        if line.startswith("  ") and not line.startswith("   ") and line.endswith(":")
+    }
+    needs = janitor.split("needs: [", 1)[1].split("]", 1)[0].split(", ")
+    assert set(needs) == ids - {"queue-cache-janitor"}
+    # Nothing else may wait on cancel-superseded.
+    assert main.count("cancel-superseded") == janitor.count("cancel-superseded") + (
+        cancel.count("cancel-superseded")
+    )

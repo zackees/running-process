@@ -5,6 +5,10 @@ on:
     types: [opened, reopened, synchronize, labeled, unlabeled]
   push:
     branches: [main]
+  # GEN-022 (forge-ci/ci.yml#405/#432): main merges through a merge queue,
+  # which validates the exact merge commit with the quick lane.
+  merge_group:
+    types: [checks_requested]
   schedule:
     - cron: "0 7 * * *"
   workflow_dispatch:
@@ -27,6 +31,28 @@ concurrency:
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
+  # GEN-022 / forge-ci/ci.yml#409: a queue ref carries the base commit
+  # (gh-readonly-queue/main/pr-<N>-<sha>), so the concurrency group above never
+  # pairs a PR's rebuilt queue run with the one main's movement replaced; this
+  # cancels the older one. No `needs:`; only the cache janitor depends on it.
+  cancel-superseded:
+    name: Cancel superseded queue runs
+    if: ${{ !cancelled() && github.event_name == 'merge_group' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: write
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          sparse-checkout: ci
+          persist-credentials: false
+      - name: Cancel
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 -m ci.cancel_superseded
+
   # Read the exact PR head and the base's trust policy. Covered quick checks
   # reuse a verified local proof; audit samples retain remote execution.
   ci-mode:
@@ -105,3 +131,40 @@ jobs:
       actions: write
       contents: read
     uses: ./.github/workflows/cache-budget.yml
+
+  # GEN-022 (forge-ci/ci.yml#405): every queue run ends with the ci-lint cache
+  # janitor. It runs after every other job, even failed ones, so the repository
+  # stays under [cache].budget by our LRU order instead of GitHub's, which can
+  # evict a seed a required job restores. The queue serializes default-branch
+  # cache writes; the non-cancelling group keeps one sweep at a time across
+  # runs. Pinned to a ci-lint new enough to run the repo-wide budget LRU pass
+  # (forge-ci/ci.yml#407).
+  queue-cache-janitor:
+    name: End-of-queue cache janitor
+    needs: [cancel-superseded, ci-mode, linux-quick, linux-full, macos, windows, coverage, all-features, cache-budget]
+    if: ${{ always() && github.event_name == 'merge_group' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    concurrency:
+      group: cache-janitor
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      actions: write
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          repository: zackees/ci.yml
+          ref: 953c4e13691b10c1c4f1f9c39fa259fd732c5789
+          path: .ci-lint
+          sparse-checkout: ci_lint
+          persist-credentials: false
+      - name: Evict down to the cache budget
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          PYTHONPATH: .ci-lint
+        run: python3 -m ci_lint cache janitor --repo .
