@@ -65,6 +65,11 @@ env:
   # Windows and macOS lanes that share this workflow are unaffected.
   CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: "-C link-arg=-Wl,--build-id=sha1"
   CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS: "-C link-arg=-Wl,--build-id=sha1"
+  # mimalloc-pprof 0.9.3 (testbins) defines MI_USE_C11_ATOMICS for
+  # aarch64-pc-windows-msvc, and MSVC's <stdatomic.h> refuses that without
+  # /std:c11: "C atomics require C11 or later" broke the windows-arm build.
+  # cc-rs reads this per-target variable, so no other lane sees it.
+  CFLAGS_aarch64_pc_windows_msvc: "/std:c11"
 
 jobs:
   preflight:
