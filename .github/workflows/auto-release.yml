@@ -775,7 +775,11 @@ jobs:
           # run 26152536023 with proto v3.2.1).
           crate_visible() {
             local name="$1" version="$2"
-            curl -sf "https://crates.io/api/v1/crates/$name/$version" >/dev/null
+            # crates.io answers 403 to a request without a User-Agent, which
+            # made every crate look unpublished, so a rerun after a partial
+            # publish died on "already uploaded" instead of skipping.
+            curl -sf -A "running-process-release (github.com/zackees/running-process)" \
+              "https://crates.io/api/v1/crates/$name/$version" >/dev/null
           }
 
           for crate in "${PUBLISH_ORDER[@]}"; do
