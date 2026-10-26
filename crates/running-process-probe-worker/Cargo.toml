@@ -45,11 +45,11 @@ pdb = "0.8"
 # own. Same isolation argument as every other parser here: it lives in the
 # disposable worker, never in the daemon.
 pdb-addr2line = "0.12"
-object = { version = "0.36", default-features = false, features = ["read", "std"] }
+object = { version = "0.40", default-features = false, features = ["read", "std"] }
 
 [target.'cfg(not(target_os = "windows"))'.dependencies]
 lzma-rs = "0.3"
-object = { version = "0.36", default-features = false, features = ["read", "std"] }
+object = { version = "0.40", default-features = false, features = ["read", "std"] }
 # DWARF line programs, for resolving a frame to file:line (#803).
 #
 # The `loader` feature is what provides `addr2line::Loader`, which owns its
@@ -60,7 +60,7 @@ object = { version = "0.36", default-features = false, features = ["read", "std"
 # Unix-only, alongside the rest of the ELF/Mach-O parsing. The Windows half is
 # blocked separately: `pdb` 0.8 panics iterating line programs on PDBs rustc
 # produces, so that side needs a different crate (see #803).
-addr2line = { version = "0.24", default-features = false, features = [
+addr2line = { version = "0.27", default-features = false, features = [
     "std",
     "loader",
 ] }
