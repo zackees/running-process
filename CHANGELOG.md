@@ -1,5 +1,24 @@
 # Changelog
 
+## 4.10.17 — Supervised services with a non-blocking client
+
+- New light top-level Python package `running_process_service`
+  (`ServiceSpec`, `ServiceServer`, `serve`, `ServiceClient`) and Rust
+  `broker::backend_sdk::{ServiceServer, PollingFrameClient}`: a small
+  service bound once per user (`ServiceAlreadyRunning` for a second
+  instance), health-probed through its identity file, and respawned by its
+  clients under a lock file within a spawn budget (3 per 30 s), with no
+  broker. See `docs/SERVICE.md`.
+- The client never blocks: `send` fails fast with `ServiceUnavailable` or
+  `QueueFull`, `try_recv` polls, and replies are matched by request id
+  (out of order). Built for callers that may only poll from a timer, such
+  as code on a terminal emulator's UI thread.
+- `import running_process_service` loads only the native extension, not the
+  `running_process` package.
+- `ipc::Stream::set_interruptible_reads` / `bytes_available` (platform
+  facade): reads that a closing server can interrupt on every platform;
+  Windows pipes poll `PeekNamedPipe` because they ignore receive timeouts.
+
 ## 4.10.16 — Actually Portable Executable launches
 
 - Runs Cosmopolitan Actually Portable Executables (APE) on hosts with no
