@@ -5,8 +5,6 @@
 //! their endpoint, product payload identifiers, and I/O policy; this module
 //! only translates the frozen envelope into canonical values.
 
-use std::fmt;
-
 use crate::frame_v1 as backend;
 
 /// Frozen outer framing byte for a v1 daemon frame.
@@ -310,9 +308,10 @@ pub enum DaemonFrameDecode {
 }
 
 /// Errors from frozen daemon-frame encoding and decoding.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum DaemonFrameError {
     /// The outer framing byte is not the v1 frozen value.
+    #[error("unsupported daemon-frame version {received}; expected {expected}")]
     UnsupportedFrameVersion {
         /// Byte received before the length prefix.
         received: u8,
@@ -320,6 +319,7 @@ pub enum DaemonFrameError {
         expected: u8,
     },
     /// The claimed or encoded body exceeds the v1 16 MiB bound.
+    #[error("daemon-frame body {body_length} exceeds maximum {maximum}")]
     FrameTooLarge {
         /// Length claimed by the little-endian outer header.
         body_length: usize,
@@ -327,6 +327,7 @@ pub enum DaemonFrameError {
         maximum: usize,
     },
     /// The complete body cannot be decoded as a frozen v1 envelope.
+    #[error("malformed daemon-frame body")]
     MalformedFrame,
 }
 
@@ -349,29 +350,6 @@ impl DaemonFrameError {
         }
     }
 }
-
-impl fmt::Display for DaemonFrameError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::UnsupportedFrameVersion { received, expected } => {
-                write!(
-                    formatter,
-                    "unsupported daemon-frame version {received}; expected {expected}"
-                )
-            }
-            Self::FrameTooLarge {
-                body_length,
-                maximum,
-            } => write!(
-                formatter,
-                "daemon-frame body {body_length} exceeds maximum {maximum}"
-            ),
-            Self::MalformedFrame => formatter.write_str("malformed daemon-frame body"),
-        }
-    }
-}
-
-impl std::error::Error for DaemonFrameError {}
 
 /// Return whether `payload_protocol` is reserved by the shared frame codec.
 #[doc(hidden)]

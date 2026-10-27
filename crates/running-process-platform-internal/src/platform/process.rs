@@ -525,24 +525,14 @@ pub enum OwnerDeathCleanupStage {
 }
 
 /// A failure to install owner-death containment, and the step it failed at.
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
+#[error("{stage:?}: {source}")]
 pub struct OwnerDeathCleanupError {
     /// The step that failed.
     pub stage: OwnerDeathCleanupStage,
     /// What the host reported.
+    #[source]
     pub source: std::io::Error,
-}
-
-impl std::fmt::Display for OwnerDeathCleanupError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{:?}: {}", self.stage, self.source)
-    }
-}
-
-impl std::error::Error for OwnerDeathCleanupError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        Some(&self.source)
-    }
 }
 
 pub use crate::{
@@ -569,11 +559,13 @@ pub enum ProcessInspectErrorKind {
 }
 
 /// A failure to inspect or signal a process, and what kind of failure it was.
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
+#[error("{kind:?}: {source}")]
 pub struct ProcessInspectError {
     /// Which of the four situations this is.
     pub kind: ProcessInspectErrorKind,
     /// What the host reported.
+    #[source]
     pub source: std::io::Error,
 }
 
@@ -592,18 +584,6 @@ impl ProcessInspectError {
             kind,
             source: std::io::Error::other(message.to_string()),
         }
-    }
-}
-
-impl std::fmt::Display for ProcessInspectError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{:?}: {}", self.kind, self.source)
-    }
-}
-
-impl std::error::Error for ProcessInspectError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        Some(&self.source)
     }
 }
 

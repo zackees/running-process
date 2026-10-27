@@ -116,16 +116,9 @@ pub struct ProcessWatch {
     pub label: String,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
+#[error("{0}")]
 pub struct ProcessWatchConfigurationError(pub String);
-
-impl std::fmt::Display for ProcessWatchConfigurationError {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str(&self.0)
-    }
-}
-
-impl std::error::Error for ProcessWatchConfigurationError {}
 
 impl ProcessWatch {
     pub fn on_spawn(
@@ -404,16 +397,9 @@ pub struct ProcessObservation {
     pub fallback_reason: Option<String>,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
+#[error("{0}")]
 pub struct ProcessObservationError(pub String);
-
-impl std::fmt::Display for ProcessObservationError {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str(&self.0)
-    }
-}
-
-impl std::error::Error for ProcessObservationError {}
 
 struct WatchRuntime {
     watch: ProcessWatch,

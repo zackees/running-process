@@ -722,24 +722,15 @@ impl Default for PtySessionRegistry {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum SpawnError {
+    #[error("argv must not be empty")]
     EmptyArgv,
+    #[error("failed to build PTY process: {0}")]
     Construct(String),
+    #[error("failed to spawn PTY: {0}")]
     Spawn(String),
 }
-
-impl std::fmt::Display for SpawnError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            SpawnError::EmptyArgv => write!(f, "argv must not be empty"),
-            SpawnError::Construct(s) => write!(f, "failed to build PTY process: {s}"),
-            SpawnError::Spawn(s) => write!(f, "failed to spawn PTY: {s}"),
-        }
-    }
-}
-
-impl std::error::Error for SpawnError {}
 
 // ---------------------------------------------------------------------------
 // Reader thread

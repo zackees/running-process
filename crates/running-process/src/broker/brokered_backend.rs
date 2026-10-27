@@ -34,50 +34,28 @@
 //! shape so downstream conformance tests + daemon migrations have a
 //! stable target.
 
-use std::error::Error;
-use std::fmt;
-
 /// Reasons a [`BrokeredBackend::bind`] call can fail.
 ///
 /// Deliberately small. The broker treats every variant identically
 /// (declare the spawn dead, surface the error to the operator); the
 /// taxonomy exists so daemons can produce useful logs without inventing
 /// their own error types.
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum BindError {
     /// The endpoint string was not a valid platform path / pipe name.
+    #[error("invalid endpoint: {0}")]
     InvalidEndpoint(String),
-
     /// Another process already holds the endpoint (`EADDRINUSE`,
     /// `ERROR_PIPE_BUSY`, etc.).
+    #[error("endpoint already bound: {0}")]
     AlreadyBound(String),
-
     /// Underlying OS error from the bind syscall.
-    Io(std::io::Error),
-
+    #[error("bind io error: {0}")]
+    Io(#[source] std::io::Error),
     /// Catch-all for daemon-specific bind failures (permission
     /// denied via custom security policy, etc.).
+    #[error("bind error: {0}")]
     Other(String),
-}
-
-impl fmt::Display for BindError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::InvalidEndpoint(s) => write!(f, "invalid endpoint: {s}"),
-            Self::AlreadyBound(s) => write!(f, "endpoint already bound: {s}"),
-            Self::Io(e) => write!(f, "bind io error: {e}"),
-            Self::Other(s) => write!(f, "bind error: {s}"),
-        }
-    }
-}
-
-impl Error for BindError {
-    fn source(&self) -> Option<&(dyn Error + 'static)> {
-        match self {
-            Self::Io(e) => Some(e),
-            _ => None,
-        }
-    }
 }
 
 impl From<std::io::Error> for BindError {

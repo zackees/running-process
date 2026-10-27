@@ -636,22 +636,13 @@ impl Default for PipeSessionRegistry {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum SpawnError {
+    #[error("argv must not be empty")]
     EmptyArgv,
+    #[error("failed to spawn pipe session: {0}")]
     Spawn(String),
 }
-
-impl std::fmt::Display for SpawnError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            SpawnError::EmptyArgv => write!(f, "argv must not be empty"),
-            SpawnError::Spawn(s) => write!(f, "failed to spawn pipe session: {s}"),
-        }
-    }
-}
-
-impl std::error::Error for SpawnError {}
 
 // ---------------------------------------------------------------------------
 // Reader threads

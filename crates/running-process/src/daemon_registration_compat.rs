@@ -5,8 +5,6 @@
 //! does not select an endpoint, construct a broker client, or define product
 //! cache/service policy.
 
-use std::error::Error;
-use std::fmt;
 use std::path::{Path, PathBuf};
 
 use crate::daemon_registration as backend;
@@ -77,126 +75,45 @@ impl<'a> CacheRoot<'a> {
 }
 
 /// Failure while validating, persisting, or reading a frozen v1 registration.
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum DaemonRegistrationError {
     /// A filesystem operation failed.
-    Io(std::io::Error),
+    #[error("daemon registration I/O failed: {0}")]
+    Io(#[source] std::io::Error),
     /// A persisted v1 record could not be decoded.
+    #[error("malformed frozen v1 registration record")]
     MalformedRecord,
     /// A persisted manifest's required SHA-256 seal did not verify.
+    #[error("frozen v1 manifest SHA-256 seal did not verify")]
     ManifestIntegrityFailure,
     /// A manifest uses a schema newer than this facade supports.
-    UnsupportedManifestSchema {
-        /// Schema found in the persisted manifest.
-        got: u32,
-        /// Maximum schema this facade supports.
-        supported: u32,
-    },
+    #[error("unsupported manifest schema {got}; supported through {supported}")]
+    UnsupportedManifestSchema { got: u32, supported: u32 },
     /// A service name or version violates frozen v1 validation.
-    InvalidNameOrVersion {
-        /// Stable diagnostic supplied by the underlying validator.
-        detail: String,
-    },
+    #[error("invalid frozen v1 service name or version: {detail}")]
+    InvalidNameOrVersion { detail: String },
     /// A required registration path had no parent directory.
-    MissingParent {
-        /// Path rejected by the persistence layer.
-        path: PathBuf,
-    },
+    #[error("registration path has no parent: {}", path.display())]
+    MissingParent { path: PathBuf },
     /// A registration directory was not private to its current user.
-    InsecureDirectory {
-        /// Directory rejected by the persistence layer.
-        path: PathBuf,
-    },
+    #[error("registration directory is not owner-private: {}", path.display())]
+    InsecureDirectory { path: PathBuf },
     /// A loaded service-definition did not name the requested service.
-    ServiceNameMismatch {
-        /// Service name requested by the caller.
-        requested: String,
-        /// Service name stored in the record.
-        actual: String,
-    },
+    #[error("requested service {requested:?}, found {actual:?}")]
+    ServiceNameMismatch { requested: String, actual: String },
     /// A service-definition binary or per-version directory was invalid.
+    #[error("invalid service-definition {field} {path:?}: {reason}")]
     InvalidServicePath {
-        /// Field rejected by frozen v1 validation.
         field: &'static str,
-        /// Recorded path string.
         path: String,
-        /// Stable validation reason.
         reason: &'static str,
     },
     /// A service-definition isolation combination was invalid.
-    InvalidServiceIsolation {
-        /// Stable validation reason.
-        reason: &'static str,
-    },
+    #[error("invalid service-definition isolation: {reason}")]
+    InvalidServiceIsolation { reason: &'static str },
     /// Serializing a v1 record failed.
+    #[error("frozen v1 registration serialization failed")]
     Serialization,
-}
-
-impl fmt::Display for DaemonRegistrationError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Io(error) => write!(formatter, "daemon registration I/O failed: {error}"),
-            Self::MalformedRecord => formatter.write_str("malformed frozen v1 registration record"),
-            Self::ManifestIntegrityFailure => {
-                formatter.write_str("frozen v1 manifest SHA-256 seal did not verify")
-            }
-            Self::UnsupportedManifestSchema { got, supported } => {
-                write!(
-                    formatter,
-                    "unsupported manifest schema {got}; supported through {supported}"
-                )
-            }
-            Self::InvalidNameOrVersion { detail } => {
-                write!(
-                    formatter,
-                    "invalid frozen v1 service name or version: {detail}"
-                )
-            }
-            Self::MissingParent { path } => {
-                write!(
-                    formatter,
-                    "registration path has no parent: {}",
-                    path.display()
-                )
-            }
-            Self::InsecureDirectory { path } => {
-                write!(
-                    formatter,
-                    "registration directory is not owner-private: {}",
-                    path.display()
-                )
-            }
-            Self::ServiceNameMismatch { requested, actual } => {
-                write!(
-                    formatter,
-                    "requested service {requested:?}, found {actual:?}"
-                )
-            }
-            Self::InvalidServicePath {
-                field,
-                path,
-                reason,
-            } => write!(
-                formatter,
-                "invalid service-definition {field} {path:?}: {reason}"
-            ),
-            Self::InvalidServiceIsolation { reason } => {
-                write!(formatter, "invalid service-definition isolation: {reason}")
-            }
-            Self::Serialization => {
-                formatter.write_str("frozen v1 registration serialization failed")
-            }
-        }
-    }
-}
-
-impl Error for DaemonRegistrationError {
-    fn source(&self) -> Option<&(dyn Error + 'static)> {
-        match self {
-            Self::Io(error) => Some(error),
-            _ => None,
-        }
-    }
 }
 
 fn manifest_error(error: backend::manifest::ManifestError) -> DaemonRegistrationError {
@@ -654,7 +571,7 @@ mod compatibility_tests {
         let error = manifest_error(backend::manifest::ManifestError::Io(
             std::io::Error::from_raw_os_error(13),
         ));
-        assert!(error.source().is_some());
+        assert!(std::error::Error::source(&error).is_some());
         let DaemonRegistrationError::Io(source) = error else {
             panic!("I/O error expected")
         };

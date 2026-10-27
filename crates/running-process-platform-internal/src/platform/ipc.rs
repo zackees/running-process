@@ -131,7 +131,8 @@ pub enum HandoffTransferErrorKind {
 }
 
 /// Failure from the platform-owned connection-transfer primitive.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+#[error("{detail}")]
 pub struct HandoffTransferError {
     kind: HandoffTransferErrorKind,
     may_have_reached_backend: bool,
@@ -161,14 +162,6 @@ impl HandoffTransferError {
         self.may_have_reached_backend
     }
 }
-
-impl std::fmt::Display for HandoffTransferError {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str(&self.detail)
-    }
-}
-
-impl std::error::Error for HandoffTransferError {}
 
 /// Resolve a broker endpoint name using selected-host path and pipe rules.
 #[cfg(feature = "ipc")]
