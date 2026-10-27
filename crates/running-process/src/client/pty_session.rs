@@ -289,15 +289,19 @@ pub struct PtyAttachment {
 }
 
 /// Errors specific to attach.
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum AttachError {
     /// Failed to open a socket connection to the daemon.
+    #[error("attach connect failed: {0}")]
     Connect(std::io::Error),
     /// I/O failed while exchanging attach or stream frames.
+    #[error("attach io error: {0}")]
     Io(std::io::Error),
     /// A daemon response or stream frame could not be decoded.
+    #[error("attach decode error: {0}")]
     Decode(prost::DecodeError),
     /// The daemon rejected the attach request.
+    #[error("attach server error {code:?}: {message}")]
     Server {
         /// Status code returned by the daemon.
         code: StatusCode,
@@ -305,24 +309,9 @@ pub enum AttachError {
         message: String,
     },
     /// The daemon never sent an AttachPtySessionResponse payload.
+    #[error("attach response missing payload")]
     MissingPayload,
 }
-
-impl std::fmt::Display for AttachError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            AttachError::Connect(e) => write!(f, "attach connect failed: {e}"),
-            AttachError::Io(e) => write!(f, "attach io error: {e}"),
-            AttachError::Decode(e) => write!(f, "attach decode error: {e}"),
-            AttachError::Server { code, message } => {
-                write!(f, "attach server error {code:?}: {message}")
-            }
-            AttachError::MissingPayload => write!(f, "attach response missing payload"),
-        }
-    }
-}
-
-impl std::error::Error for AttachError {}
 
 impl PtyAttachment {
     /// Open a fresh socket to the daemon and attach to `session_id`.

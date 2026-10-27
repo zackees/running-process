@@ -45,28 +45,19 @@ pub struct AutostartProgram<'a> {
 /// The three cases are kept apart because an operator does something different
 /// about each: fix the environment, fix the filesystem, or arm the init system
 /// by hand.
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum AutostartError {
     /// The host would not say where the registration belongs -- typically a
     /// missing `HOME` or `XDG_CONFIG_HOME`.
+    #[error("could not resolve autostart location: {0}")]
     Resolve(String),
     /// Writing or removing the registration failed.
+    #[error("autostart file operation failed: {0}")]
     Io(io::Error),
     /// The init system itself refused, or could not be invoked.
+    #[error("init system rejected autostart: {0}")]
     InitSystem(String),
 }
-
-impl std::fmt::Display for AutostartError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Resolve(detail) => write!(f, "could not resolve autostart location: {detail}"),
-            Self::Io(error) => write!(f, "autostart file operation failed: {error}"),
-            Self::InitSystem(detail) => write!(f, "init system rejected autostart: {detail}"),
-        }
-    }
-}
-
-impl std::error::Error for AutostartError {}
 
 impl From<io::Error> for AutostartError {
     fn from(error: io::Error) -> Self {

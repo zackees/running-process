@@ -192,33 +192,24 @@ impl OwnedService {
 // Errors
 // ---------------------------------------------------------------------------
 
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum ServiceError {
     /// A service with this name already exists.
+    #[error("service '{0}' already exists")]
     AlreadyExists(String),
     /// No service matched the target.
+    #[error("no service matched '{0}'")]
     NotFound(String),
     /// argv was empty / invalid.
+    #[error("invalid service config: {0}")]
     InvalidConfig(String),
     /// Failed to spawn the child.
+    #[error("failed to spawn service: {0}")]
     Spawn(String),
     /// SQLite write-through failed.
+    #[error("service db error: {0}")]
     Db(String),
 }
-
-impl std::fmt::Display for ServiceError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            ServiceError::AlreadyExists(n) => write!(f, "service '{n}' already exists"),
-            ServiceError::NotFound(t) => write!(f, "no service matched '{t}'"),
-            ServiceError::InvalidConfig(m) => write!(f, "invalid service config: {m}"),
-            ServiceError::Spawn(m) => write!(f, "failed to spawn service: {m}"),
-            ServiceError::Db(m) => write!(f, "service db error: {m}"),
-        }
-    }
-}
-
-impl std::error::Error for ServiceError {}
 
 impl From<rusqlite::Error> for ServiceError {
     fn from(e: rusqlite::Error) -> Self {

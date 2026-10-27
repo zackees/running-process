@@ -310,15 +310,19 @@ pub struct PipeStreamAttachment {
 }
 
 /// Errors from opening or reading a pipe stream attachment.
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum PipeAttachError {
     /// Opening the daemon socket failed.
+    #[error("pipe attach connect failed: {0}")]
     Connect(std::io::Error),
     /// Reading or writing the length-prefixed socket stream failed.
+    #[error("pipe attach io error: {0}")]
     Io(std::io::Error),
     /// Decoding a daemon response or stream frame failed.
+    #[error("pipe attach decode error: {0}")]
     Decode(prost::DecodeError),
     /// The daemon rejected the attach request.
+    #[error("pipe attach server error {code:?}: {message}")]
     Server {
         /// Server status code returned by the daemon.
         code: StatusCode,
@@ -326,24 +330,9 @@ pub enum PipeAttachError {
         message: String,
     },
     /// The daemon accepted the attach request but omitted its payload.
+    #[error("pipe attach response missing payload")]
     MissingPayload,
 }
-
-impl std::fmt::Display for PipeAttachError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Connect(e) => write!(f, "pipe attach connect failed: {e}"),
-            Self::Io(e) => write!(f, "pipe attach io error: {e}"),
-            Self::Decode(e) => write!(f, "pipe attach decode error: {e}"),
-            Self::Server { code, message } => {
-                write!(f, "pipe attach server error {code:?}: {message}")
-            }
-            Self::MissingPayload => write!(f, "pipe attach response missing payload"),
-        }
-    }
-}
-
-impl std::error::Error for PipeAttachError {}
 
 impl PipeStreamAttachment {
     /// Open the scoped daemon socket and attach to a session output stream.

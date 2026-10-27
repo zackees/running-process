@@ -25,15 +25,19 @@ use std::sync::atomic::{AtomicU64, Ordering};
 // ---------------------------------------------------------------------------
 
 /// Errors produced by [`DaemonClient`] operations.
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum ClientError {
     /// Failed to connect to the daemon socket.
-    Connect(std::io::Error),
+    #[error("failed to connect to daemon: {0}")]
+    Connect(#[source] std::io::Error),
     /// I/O error during send or receive.
-    Io(std::io::Error),
+    #[error("daemon I/O error: {0}")]
+    Io(#[source] std::io::Error),
     /// Failed to decode a protobuf response.
-    Decode(prost::DecodeError),
+    #[error("failed to decode daemon response: {0}")]
+    Decode(#[source] prost::DecodeError),
     /// The daemon returned an application-level error response.
+    #[error("daemon returned {code:?}: {message}")]
     Server {
         /// Application-level status code returned by the daemon.
         code: StatusCode,
@@ -41,35 +45,8 @@ pub enum ClientError {
         message: String,
     },
     /// The daemon is not running and could not be started.
+    #[error("running-process broker is not running; run `running-process-daemon start` or use a non-broker process API")]
     DaemonNotRunning,
-}
-
-impl std::fmt::Display for ClientError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            ClientError::Connect(e) => write!(f, "failed to connect to daemon: {e}"),
-            ClientError::Io(e) => write!(f, "daemon I/O error: {e}"),
-            ClientError::Decode(e) => write!(f, "failed to decode daemon response: {e}"),
-            ClientError::Server { code, message } => {
-                write!(f, "daemon returned {:?}: {}", code, message)
-            }
-            ClientError::DaemonNotRunning => write!(
-                f,
-                "running-process broker is not running; run `running-process-daemon start` or \
-                 use a non-broker process API"
-            ),
-        }
-    }
-}
-
-impl std::error::Error for ClientError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            ClientError::Connect(e) | ClientError::Io(e) => Some(e),
-            ClientError::Decode(e) => Some(e),
-            ClientError::Server { .. } | ClientError::DaemonNotRunning => None,
-        }
-    }
 }
 
 // ---------------------------------------------------------------------------

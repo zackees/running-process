@@ -54,34 +54,25 @@ impl fmt::Display for UnitPath {
 }
 
 /// Anything that can go wrong installing/uninstalling boot autostart.
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum BootAutostartError {
     /// Could not resolve where to write the unit file.
+    #[error("could not resolve autostart location: {0}")]
     Resolve(String),
     /// Filesystem write/remove failed.
+    #[error("autostart file operation failed: {0}")]
     Io(std::io::Error),
     /// The init-system CLI (`systemctl`, `launchctl`, `schtasks`) failed.
+    #[error("init system rejected autostart: {0}")]
     InitSystem(String),
     /// This OS has no autostart backend.
     ///
     /// Retained for compatibility. It is no longer produced: the platform
     /// facade is built for exactly the hosts this crate compiles on, so a host
     /// without a backend fails to build rather than failing at runtime.
+    #[error("boot autostart is not supported on {0}")]
     Unsupported(String),
 }
-
-impl fmt::Display for BootAutostartError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Resolve(detail) => write!(f, "could not resolve autostart location: {detail}"),
-            Self::Io(error) => write!(f, "autostart file operation failed: {error}"),
-            Self::InitSystem(detail) => write!(f, "init system rejected autostart: {detail}"),
-            Self::Unsupported(os) => write!(f, "boot autostart is not supported on {os}"),
-        }
-    }
-}
-
-impl std::error::Error for BootAutostartError {}
 
 impl From<std::io::Error> for BootAutostartError {
     fn from(error: std::io::Error) -> Self {

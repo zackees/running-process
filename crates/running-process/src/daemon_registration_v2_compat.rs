@@ -5,8 +5,6 @@
 //! write. This facade deliberately owns no manifest, loader, negotiation,
 //! endpoint, or runtime policy.
 
-use std::error::Error;
-use std::fmt;
 use std::path::{Path, PathBuf};
 
 use crate::daemon_registration_v2 as backend;
@@ -24,53 +22,20 @@ pub mod canonical {
 }
 
 /// Failure while validating or persisting a frozen v2 service definition.
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum DaemonRegistrationV2Error {
     /// A filesystem operation failed.
-    Io(std::io::Error),
+    #[error("daemon registration v2 I/O failed: {0}")]
+    Io(#[source] std::io::Error),
     /// A service name violates frozen registration validation.
-    InvalidName {
-        /// Stable diagnostic supplied by the underlying validator.
-        detail: String,
-    },
+    #[error("invalid frozen v2 service name: {detail}")]
+    InvalidName { detail: String },
     /// The service-definition directory was not private to its current user.
-    InsecureDirectory {
-        /// Directory rejected by the persistence layer.
-        path: PathBuf,
-    },
+    #[error("v2 service-definition directory is not owner-private: {}", path.display())]
+    InsecureDirectory { path: PathBuf },
     /// A definition failed a frozen semantic validation not otherwise exposed.
-    InvalidDefinition {
-        /// Stable diagnostic supplied by the underlying validator.
-        detail: String,
-    },
-}
-
-impl fmt::Display for DaemonRegistrationV2Error {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Io(error) => write!(formatter, "daemon registration v2 I/O failed: {error}"),
-            Self::InvalidName { detail } => {
-                write!(formatter, "invalid frozen v2 service name: {detail}")
-            }
-            Self::InsecureDirectory { path } => write!(
-                formatter,
-                "v2 service-definition directory is not owner-private: {}",
-                path.display()
-            ),
-            Self::InvalidDefinition { detail } => {
-                write!(formatter, "invalid frozen v2 service definition: {detail}")
-            }
-        }
-    }
-}
-
-impl Error for DaemonRegistrationV2Error {
-    fn source(&self) -> Option<&(dyn Error + 'static)> {
-        match self {
-            Self::Io(error) => Some(error),
-            _ => None,
-        }
-    }
+    #[error("invalid frozen v2 service definition: {detail}")]
+    InvalidDefinition { detail: String },
 }
 
 fn service_error(error: backend::ServiceDefinitionError) -> DaemonRegistrationV2Error {
