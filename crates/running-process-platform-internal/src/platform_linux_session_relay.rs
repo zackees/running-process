@@ -120,11 +120,12 @@ fn injected_splice_error() -> io::Error {
 /// tokio 1.54 deprecates the safe `AsyncFd::new` as unsound
 /// (RUSTSEC-2026-0386): it trusted `as_raw_fd()` to stay valid and stable.
 fn register(fd: OwnedFd) -> io::Result<AsyncFd<OwnedFd>> {
-    // SAFETY: `OwnedFd` holds an open descriptor, returns that same descriptor
-    // from every `as_raw_fd()` call, and closes it only when dropped. The
-    // `AsyncFd` takes ownership of it, so it stays open for the `AsyncFd`'s
-    // whole lifetime.
-    unsafe { AsyncFd::register(fd) }.map_err(io::Error::from)
+    // OwnedFd keeps its descriptor open and stable until it is dropped, so it
+    // upholds the invariant that older Tokio's safe constructor failed to
+    // enforce for arbitrary AsRawFd implementations. Keep compatibility with
+    // Tokio 1.53, which does not yet provide AsyncFd::register.
+    #[allow(deprecated)] // Tokio 1.54 deprecates new; OwnedFd satisfies its invariant.
+    AsyncFd::new(fd)
 }
 
 fn duplicate(fd: RawFd) -> io::Result<OwnedFd> {

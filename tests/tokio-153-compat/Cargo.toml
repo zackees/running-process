@@ -1,0 +1,13 @@
+[package]
+name = "tokio-153-compat"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[workspace]
+
+[dependencies]
+running-process-platform-internal = { path = "../../crates/running-process-platform-internal", features = ["session-relay"] }
+tokio = { version = "=1.53.1", features = ["net", "rt"] }
+# Match the affected Soldr graph; newer interprocess releases require Tokio 1.54.
+interprocess = "=2.4.3"
