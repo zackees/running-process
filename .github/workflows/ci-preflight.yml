@@ -226,6 +226,10 @@ jobs:
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         run: uv run --no-sync --module ci.run_logged logs/test.log -- uv run --no-sync --module ci.test
 
+      - name: Session relay with Tokio 1.53
+        if: ${{ inputs.label == 'linux-x86' }}
+        run: soldr cargo check --locked --manifest-path tests/tokio-153-compat/Cargo.toml
+
       - name: Broker Hello perf guard
         if: ${{ inputs.label == 'linux-x86' }}
         env:
