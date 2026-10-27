@@ -16,7 +16,7 @@ name: CI Preflight Rust-only (Reusable)
 #     C-build-script crates (rusqlite/bundled, blake3 asm, etc.).
 #   - `zackees/setup-soldr@v0` provisions the toolchain from
 #     rust-toolchain.toml and soldr's zccache-backed build cache
-#     (CACHE-025, zackees/ci.yml#209); `soldr rustup target add` adds
+#     (CACHE-025, zackees/ci.yml#209); `ci/install_rust_target.sh` adds
 #     the rust-std for the musl target.
 #   - `soldr cargo build/clippy/nextest --target <triple>` builds
 #     against the musl target. The platform-default linker is kept:
@@ -95,7 +95,7 @@ jobs:
           linker: platform-default
 
       - name: Install ${{ inputs.target }} standard library
-        run: soldr rustup target add ${{ inputs.target }} --toolchain 1.95.0
+        run: bash ci/install_rust_target.sh ${{ inputs.target }} 1.95.0
 
       - name: cargo build --target ${{ inputs.target }}
         run: soldr cargo build --workspace --exclude running-process-py --all-targets --features ${{ inputs.features }} --target ${{ inputs.target }}
@@ -121,7 +121,7 @@ jobs:
           prebuild-deps: none
           linker: platform-default
       - name: Install ${{ inputs.target }} standard library
-        run: soldr rustup target add ${{ inputs.target }} --toolchain 1.95.0
+        run: bash ci/install_rust_target.sh ${{ inputs.target }} 1.95.0
       - name: cargo clippy --target ${{ inputs.target }}
         run: soldr cargo clippy --workspace --exclude running-process-py --all-targets --features ${{ inputs.features }} --target ${{ inputs.target }} -- -D warnings
 
@@ -147,7 +147,7 @@ jobs:
           prebuild-deps: none
           linker: platform-default
       - name: Install ${{ inputs.target }} standard library
-        run: soldr rustup target add ${{ inputs.target }} --toolchain 1.95.0
+        run: bash ci/install_rust_target.sh ${{ inputs.target }} 1.95.0
       - name: Install cargo-nextest
         uses: taiki-e/install-action@v2
         with:
@@ -201,7 +201,7 @@ jobs:
           prebuild-deps: none
           linker: platform-default
       - name: Install ${{ inputs.target }} standard library
-        run: soldr rustup target add ${{ inputs.target }} --toolchain 1.95.0
+        run: bash ci/install_rust_target.sh ${{ inputs.target }} 1.95.0
       - name: Install cargo-nextest
         uses: taiki-e/install-action@v2
         with:

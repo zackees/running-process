@@ -255,8 +255,14 @@ fn round_trip(
         Err(BrokerClientError::Refused {
             code: ErrorCode::ErrorBackendSpawnFailed,
             retry_after_ms,
-            ..
+            reason,
         }) if retry_after_ms > 0 => {
+            // Printed so a lane where the transition never settles shows why
+            // the broker could not launch the backend, not just that it
+            // kept asking for a retry.
+            eprintln!(
+                "lifecycle {service}: backend spawn failed, retry in {retry_after_ms} ms: {reason}"
+            );
             return ReconnectOutcome::BackendTransition(Duration::from_millis(retry_after_ms));
         }
         Err(BrokerClientError::Refused {

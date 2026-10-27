@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import unittest
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from unittest.mock import patch
 
 from ci import local_gate
@@ -47,6 +47,17 @@ class LocalGateProofTests(unittest.TestCase):
         self.assertIn("full=false", command)
         self.document["event"] = "workflow_dispatch"
         self.assertIsNone(self.error())
+
+    def test_posix_receipt_workspace_counts_as_located_on_every_host(self) -> None:
+        # The receipt comes from a Linux container; Windows pathlib reports
+        # `/work/repo` as not absolute (no drive), which failed every real
+        # receipt on the Windows preflight lanes.
+        for flavour in (PurePosixPath, PureWindowsPath):
+            with self.subTest(flavour=flavour.__name__):
+                self.assertTrue(local_gate._is_rooted(flavour("/work/repo")))
+                self.assertFalse(local_gate._is_rooted(flavour("relative/repo")))
+        self.assertFalse(local_gate._is_rooted(PureWindowsPath("C:relative")))
+        self.assertTrue(local_gate._is_rooted(PureWindowsPath("C:\\work\\repo")))
 
     def test_integration_label_preserves_additional_remote_coverage(self) -> None:
         trust = (local_gate.ROOT / "local-gate.toml").read_text().split("[gate.trust]", 1)[1]

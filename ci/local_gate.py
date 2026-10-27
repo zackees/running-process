@@ -17,7 +17,7 @@ import subprocess
 import sys
 import tempfile
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePath
 from typing import TypeAlias
 
 JsonValue: TypeAlias = str | int | float | bool | list["JsonValue"] | dict[str, "JsonValue"] | None
@@ -185,10 +185,23 @@ def _jobs_error(jobs: tuple[Job, ...]) -> str | None:
     return None
 
 
+def _is_rooted(path: PurePath) -> bool:
+    """Whether a receipt's workspace names a location rather than a relative path.
+
+    Bosn executes the gate inside a Linux container, so its receipt reports a
+    POSIX workspace such as ``/work/repo``. ``Path.is_absolute()`` is false for
+    that on Windows, where an absolute path also needs a drive, so the check
+    rejected every genuine receipt there. A root is what separates a located
+    path from ``relative/repo`` (or a drive-relative ``C:repo``) on every host;
+    the ``resolve()`` comparison that follows still pins the exact workspace.
+    """
+    return bool(path.root)
+
+
 def proof_error(output: str, *, workspace: Path, head_sha: str) -> str | None:
     try:
         proof = _parse_proof(output)
-        if not proof.workspace.is_absolute() or proof.workspace.resolve() != workspace.resolve():
+        if not _is_rooted(proof.workspace) or proof.workspace.resolve() != workspace.resolve():
             return "Bosn executed another workspace"
         if proof.sha != head_sha:
             return "Bosn executed another commit"
