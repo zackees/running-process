@@ -716,6 +716,14 @@ jobs:
         with:
           toolchain: "1.95.0"
 
+      - name: Set up Soldr for crate publication
+        uses: zackees/setup-soldr@v0
+        with:
+          version: ${{ env.SOLDR_VERSION }}
+          cache: false
+          save-cache: "false"
+          prebuild-deps: none
+
       # #447: stage the manifest so `cargo publish`'s implicit verify
       # build reads the per-arch SHAs that match the tarballs uploaded
       # to this release. Without this, build.rs reads the placeholder
@@ -788,7 +796,7 @@ jobs:
               continue
             fi
             echo "publishing $crate $RP_VERSION"
-            cargo publish --allow-dirty --no-verify -p "$crate"
+            soldr cargo publish --allow-dirty --no-verify -p "$crate"
           done
 
   publish-release:

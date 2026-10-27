@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-__version__ = "4.10.17"
+__version__ = "4.10.19"
 
 # Imported first: turns a free-threaded interpreter loading the GIL-runtime
 # extension into an ImportError instead of a segfault (#1142).
