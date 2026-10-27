@@ -1,5 +1,10 @@
 # Changelog
 
+## 4.10.18 — CI and service reliability
+
+- Fix service cleanup races and report backend startup refusals so failures can be diagnosed.
+- Restore the full Windows, macOS, and Linux CI matrix, including the Windows x86 Dylint job and musl checks.
+
 ## 4.10.17 — Supervised services with a non-blocking client
 
 - New light top-level Python package `running_process_service`
