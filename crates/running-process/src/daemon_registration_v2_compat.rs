@@ -256,7 +256,7 @@ mod tests {
         let error = service_error(backend::ServiceDefinitionError::Io(
             std::io::Error::from_raw_os_error(13),
         ));
-        assert!(error.source().is_some());
+        assert!(std::error::Error::source(&error).is_some());
         let DaemonRegistrationV2Error::Io(source) = error else {
             panic!("I/O classification must remain intact");
         };

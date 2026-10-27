@@ -571,7 +571,7 @@ mod compatibility_tests {
         let error = manifest_error(backend::manifest::ManifestError::Io(
             std::io::Error::from_raw_os_error(13),
         ));
-        assert!(error.source().is_some());
+        assert!(std::error::Error::source(&error).is_some());
         let DaemonRegistrationError::Io(source) = error else {
             panic!("I/O error expected")
         };
