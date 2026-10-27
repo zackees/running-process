@@ -5,7 +5,7 @@ described in the repo-root `CLAUDE.md` ("Rust workspace" section).
 
 - `lib.rs` / `public_symbols.rs` — crate surface and re-exports
 - `environment.rs` — user baseline environment (Windows `CreateEnvironmentBlock`, Unix login reconstruction)
-- `spawn.rs` — platform-neutral process-spawn API; native sync-spawn implementations live in `running-process-platform-internal/src/sync_spawn_group.rs` and `platform_win/sync_spawn.rs`
+- `spawn.rs` — platform-neutral process-spawn API, including `spawn_argv_with_stdio` for argv and caller-owned stdio handles; native sync-spawn implementations live in `running-process-platform-internal/src/sync_spawn_group.rs` and `platform_win/sync_spawn.rs`
 - `process_tree.rs` — process-tree enumeration and tree kill
 - `containment.rs` — Job Objects / process-group containment
 - `console_detect.rs`, `terminal_graphics.rs`, `pty/` — console + PTY support

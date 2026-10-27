@@ -841,7 +841,7 @@ pub(crate) fn observe_owned_child_exit(pid: i32) -> io::Result<Option<i32>> {
     }
     // SAFETY: a nonzero child PID identifies the initialized exit-status union.
     let status = unsafe { info.si_status() };
-    Ok(Some(if info.si_code == libc::CLD_EXITED { status } else { 128 + status }))
+    Ok(Some(if info.si_code == libc::CLD_EXITED { status } else { -status }))
 }
 
 /// Apply a process priority expressed as a Unix nice value.
@@ -1200,6 +1200,15 @@ fn report_supervisor_status(fd: libc::c_int, status: libc::c_int) {
 fn last_errno() -> libc::c_int {
     unsafe { *libc::__error() }
 }
+
+pub(crate) fn validate_spawn_argv_platform(_argv: &[std::ffi::OsString], _cwd: Option<&std::path::Path>, _env: Option<&[(std::ffi::OsString, std::ffi::OsString)]>) -> std::io::Result<()> { Ok(()) }
+
+pub(crate) fn prepare_argv_stdio(stdio: crate::platform::process::SpawnStdio<'_>) -> crate::platform::process::SpawnStdio<'_> {
+    crate::platform::process::SpawnStdio { drain_timeout: None, ..stdio }
+}
+
+#[cfg(feature = "independent-spawn")]
+pub(crate) fn independent_exit_code(code: i32) -> i32 { if code < 0 { 128 - code } else { code } }
 
 #[cfg(all(test, feature = "async-process"))]
 #[path = "platform_macos_tests.rs"]

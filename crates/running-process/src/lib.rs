@@ -280,7 +280,7 @@ pub use running_process_platform_internal::process_same_executable_path;
 pub use running_process_platform_internal::ProcessLiveness;
 pub use rust_debug::{render_rust_debug_traces, RustDebugScopeGuard};
 pub use spawn::{
-    spawn, spawn_daemon, spawn_daemon_breaking_away_from_job,
+    spawn, spawn_argv_with_stdio, spawn_daemon, spawn_daemon_breaking_away_from_job,
     spawn_daemon_breaking_away_with_env_policy, spawn_daemon_with_clear_env,
     spawn_daemon_with_env_policy, spawn_daemon_with_environment,
     spawn_daemon_with_explicit_environment, spawn_daemon_with_stdio,

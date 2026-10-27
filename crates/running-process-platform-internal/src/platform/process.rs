@@ -365,13 +365,13 @@ pub trait SpawnedChildControl:
     fn wait(&mut self) -> std::io::Result<i32>;
     fn try_wait(&mut self) -> std::io::Result<Option<i32>>;
     fn shutdown(&mut self);
-    #[cfg(feature = "independent-spawn")]
-    fn retain_exit_identity(&mut self) {}
+    fn retain_exit_identity(&mut self) -> std::io::Result<()> {
+        Err(std::io::Error::from(std::io::ErrorKind::Unsupported))
+    }
     #[cfg(feature = "independent-spawn")]
     fn detach(&mut self) -> std::io::Result<()> {
         Ok(())
     }
-    #[cfg(feature = "independent-spawn")]
     fn kill_tree(&mut self) -> std::io::Result<()> {
         self.kill()
     }
@@ -402,9 +402,11 @@ impl SpawnedChild {
         }
     }
 
-    #[cfg(feature = "independent-spawn")]
-    pub(crate) fn retain_exit_identity(&mut self) {
-        self.inner.retain_exit_identity();
+    /// Ask the control backend to preserve child identity through cleanup.
+    /// The native Unix backend retains the waitable leader only when the
+    /// drain watcher was disabled at spawn. Unsupported controls fail closed.
+    pub fn retain_exit_identity(&mut self) -> std::io::Result<()> {
+        self.inner.retain_exit_identity()
     }
     #[cfg(feature = "independent-spawn")]
     pub(crate) fn commit_detached(&mut self) -> std::io::Result<()> {
@@ -412,8 +414,13 @@ impl SpawnedChild {
         self.kill_on_drop = false;
         Ok(())
     }
-    #[cfg(feature = "independent-spawn")]
-    pub(crate) fn kill_tree(&mut self) -> std::io::Result<()> {
+    /// Request termination of the contained process tree.
+    /// Native contained backends target the group or Job Object; custom
+    /// controls default to terminating only the direct child. This initiates
+    /// termination and does not itself wait for every descendant to exit.
+    /// Unix group signaling is best effort and can fail without an error;
+    /// callers needing confirmed termination must verify it separately.
+    pub fn kill_tree(&mut self) -> std::io::Result<()> {
         self.inner.kill_tree()
     }
     /// Return the operating-system process identifier.
@@ -792,4 +799,18 @@ mod exit_signal_tests {
         assert!(status.success());
         assert_eq!(super::exit_signal(&status), None);
     }
+}
+
+/// Validate argv restrictions imposed by the native process backend.
+pub fn validate_spawn_argv_platform(
+    argv: &[std::ffi::OsString],
+    cwd: Option<&std::path::Path>,
+    env: Option<&[(std::ffi::OsString, std::ffi::OsString)]>,
+) -> std::io::Result<()> {
+    crate::validate_spawn_argv_platform(argv, cwd, env)
+}
+
+/// Prepare stdio for argv mode while preserving the native child identity.
+pub fn prepare_argv_stdio(stdio: SpawnStdio<'_>) -> SpawnStdio<'_> {
+    crate::prepare_argv_stdio(stdio)
 }

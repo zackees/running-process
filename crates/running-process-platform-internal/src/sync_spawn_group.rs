@@ -66,6 +66,7 @@ pub struct SpawnedInner {
     child: Arc<Mutex<Option<Box<dyn UnixChild>>>>,
     pgid: i32,
     retain_exit_identity: bool,
+    drain_watcher_enabled: bool,
 }
 
 impl SpawnedInner {
@@ -149,9 +150,17 @@ impl SpawnedInner {
 }
 
 impl crate::platform::process::SpawnedChildControl for SpawnedInner {
-    #[cfg(feature = "independent-spawn")]
-    fn retain_exit_identity(&mut self) {
+    fn retain_exit_identity(&mut self) -> io::Result<()> {
+        if self.drain_watcher_enabled {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "identity retention requires the drain watcher to be disabled at spawn",
+            ));
+        }
+        // A previous wait may already have reaped the leader.
+        self.observe_owned_exit()?;
         self.retain_exit_identity = true;
+        Ok(())
     }
     fn kill(&mut self) -> io::Result<()> {
         SpawnedInner::kill(self)
@@ -298,6 +307,7 @@ fn spawn_sync_inner(command: &mut Command, stdio: crate::platform::process::Spaw
     // don't proactively close anything on Unix — Rust's ChildStdin/etc.
     // own their fds; once the child exits and the kernel ref-counts
     // its copies to zero, parent reads will EOF naturally.
+    let drain_watcher_enabled = stdio.drain_timeout.is_some();
     if let Some(timeout) = stdio.drain_timeout {
         let child_clone = Arc::clone(&child);
         thread::spawn(move || {
@@ -336,7 +346,9 @@ fn spawn_sync_inner(command: &mut Command, stdio: crate::platform::process::Spaw
         stdout,
         stderr,
         pid,
-        inner: Box::new(SpawnedInner { child, pgid, retain_exit_identity: false }),
+        inner: Box::new(SpawnedInner {
+            child, pgid, retain_exit_identity: false, drain_watcher_enabled,
+        }),
     })
 }
 
@@ -426,6 +438,7 @@ mod tests {
                 child: Arc::clone(&child),
                 pgid: i32::MAX,
                 retain_exit_identity: false,
+                drain_watcher_enabled: false,
             },
             child,
             wait_gate,
@@ -562,6 +575,7 @@ mod tests {
             child,
             pgid: i32::MAX,
             retain_exit_identity: false,
+            drain_watcher_enabled: false,
         };
 
         inner.shutdown_with_deadline(Instant::now() + Duration::from_secs(1));

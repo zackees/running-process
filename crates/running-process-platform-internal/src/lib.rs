@@ -22,6 +22,8 @@ pub mod foreground;
 mod descendant_snapshot;
 mod semantic_priority;
 mod std_child;
+#[cfg(any(windows, test))]
+mod windows_argv;
 pub use semantic_priority::ProcessPriority;
 pub use std_child::{PlatformCaptureReaders, PlatformStdChild};
 #[cfg(feature = "async-process")]
@@ -90,6 +92,9 @@ cfg_select! {
 // root. Neutral capability facades re-export only crate-root names and never
 // name the private `platform_imp` alias themselves.
 pub(crate) use platform_imp::foreground as foreground_imp;
+#[cfg(feature = "independent-spawn")]
+pub(crate) use platform_imp::independent_exit_code;
+pub(crate) use platform_imp::{prepare_argv_stdio, validate_spawn_argv_platform};
 pub(crate) use platform_imp::{PRIORITY_NICE_HIGH, PRIORITY_NICE_LOW};
 
 pub use platform_imp::{

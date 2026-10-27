@@ -406,6 +406,11 @@ impl SpawnedInner {
 }
 
 impl crate::platform::process::SpawnedChildControl for SpawnedInner {
+    fn retain_exit_identity(&mut self) -> io::Result<()> {
+        // Windows process and Job handles retain identity until closed.
+        Ok(())
+    }
+
     #[cfg(feature = "independent-spawn")]
     fn detach(&mut self) -> io::Result<()> {
         let Some(job) = &self.job else { return Err(io::Error::other("owned job absent")); };
@@ -419,7 +424,6 @@ impl crate::platform::process::SpawnedChildControl for SpawnedInner {
         }
         Ok(())
     }
-    #[cfg(feature = "independent-spawn")]
     fn kill_tree(&mut self) -> io::Result<()> {
         let Some(job) = &self.job else { return self.kill(); };
         // SAFETY: the job handle is owned and remains open through termination.
@@ -982,162 +986,119 @@ fn try_wait_inner(handle: &OwnedHandle) -> io::Result<Option<i32>> {
 }
 
 fn build_command_line<'a>(program: &OsStr, args: impl Iterator<Item = &'a OsStr>) -> Vec<u16> {
-    let program_str = program.to_string_lossy().into_owned();
-    let is_cmd = is_cmd_exe(&program_str);
-
-    let arg_strs: Vec<String> = args.map(|a| a.to_string_lossy().into_owned()).collect();
-
-    let mut s = String::new();
-    s.push_str(&quote(&program_str));
-
-    // Special case for cmd.exe: when an arg of `/C` or `/K`
-    // (case-insensitive) is followed by what we treat as the script,
-    // do NOT apply CRT-style escaping to the script. cmd.exe parses
-    // `\"` literally as backslash + quote, so the CRT's `"` → `\"`
-    // escape rule corrupts paths inside the script (the redirect
-    // target `"C:\path"` becomes `\"C:\path\"` which is no longer a
-    // valid filename to cmd). With `/S`, cmd strips the outermost
-    // pair of quotes around the whole script; everything else we
-    // pass through untouched. See PR #116 for the diagnostic trail.
-    let mut i = 0;
-    while i < arg_strs.len() {
-        let a = &arg_strs[i];
-        s.push(' ');
-        if is_cmd && is_cmd_script_switch(a) {
-            // Emit the switch itself unquoted (it has no special chars),
-            // then the remaining args concatenated with spaces, wrapped
-            // in a single pair of outer quotes that `/S` will strip.
-            s.push_str(a);
-            let script = arg_strs[i + 1..].join(" ");
-            if !script.is_empty() {
-                s.push(' ');
-                s.push('"');
-                s.push_str(&script);
-                s.push('"');
-            }
-            break;
-        }
-        s.push_str(&quote(a));
-        i += 1;
-    }
-
-    OsStr::new(&s)
-        .encode_wide()
-        .chain(std::iter::once(0))
-        .collect()
-}
-
-fn is_cmd_exe(program: &str) -> bool {
-    // Match `cmd`, `cmd.exe`, or any path ending in those (case-insensitive).
-    let lower = program.to_ascii_lowercase();
-    let tail = std::path::Path::new(&lower)
+    let is_cmd = std::path::Path::new(program)
         .file_name()
-        .map(|s| s.to_string_lossy().into_owned())
-        .unwrap_or(lower);
-    tail == "cmd" || tail == "cmd.exe"
-}
-
-fn is_cmd_script_switch(arg: &str) -> bool {
-    matches!(arg.to_ascii_lowercase().as_str(), "/c" | "/k")
-}
-
-fn quote(arg: &str) -> String {
-    if !arg.is_empty()
-        && !arg
-            .chars()
-            .any(|c| matches!(c, ' ' | '\t' | '\n' | '\x0b' | '"'))
-    {
-        return arg.to_string();
-    }
-    let mut out = String::from("\"");
-    let chars: Vec<char> = arg.chars().collect();
-    let mut i = 0;
-    while i < chars.len() {
-        let mut nbs = 0;
-        while i < chars.len() && chars[i] == '\\' {
-            nbs += 1;
-            i += 1;
-        }
-        if i == chars.len() {
-            for _ in 0..(nbs * 2) {
-                out.push('\\');
+        .and_then(OsStr::to_str)
+        .is_some_and(|name| name.eq_ignore_ascii_case("cmd") || name.eq_ignore_ascii_case("cmd.exe"));
+    let args: Vec<Vec<u16>> = args.map(|arg| arg.encode_wide().collect()).collect();
+    let mut output = crate::windows_argv::quote_arg_wide(&program.encode_wide().collect::<Vec<_>>());
+    let mut index = 0;
+    while index < args.len() {
+        let arg = &args[index];
+        output.push(b' ' as u16);
+        let script_switch = arg.len() == 2
+            && arg[0] == b'/' as u16
+            && matches!(arg[1], 0x43 | 0x63 | 0x4b | 0x6b);
+        if is_cmd && script_switch {
+            // cmd /C and /K interpret a script, not CRT-style argv. Preserve
+            // the existing outer-quote policy while retaining raw UTF-16.
+            output.extend(arg);
+            if index + 1 < args.len() {
+                output.extend([b' ' as u16, b'"' as u16]);
+                for (offset, part) in args[index + 1..].iter().enumerate() {
+                    if offset > 0 {
+                        output.push(b' ' as u16);
+                    }
+                    output.extend(part);
+                }
+                output.push(b'"' as u16);
             }
             break;
-        } else if chars[i] == '"' {
-            for _ in 0..(nbs * 2 + 1) {
-                out.push('\\');
-            }
-            out.push('"');
-        } else {
-            for _ in 0..nbs {
-                out.push('\\');
-            }
-            out.push(chars[i]);
         }
-        i += 1;
+        output.extend(crate::windows_argv::quote_arg_wide(arg));
+        index += 1;
     }
-    out.push('"');
-    out
+    output.push(0);
+    output
+}
+
+type EnvEntry = (Vec<u16>, OsString);
+
+fn compare_env_names(left: &[u16], right: &[u16]) -> io::Result<std::cmp::Ordering> {
+    let left_len = i32::try_from(left.len()).map_err(io::Error::other)?;
+    let right_len = i32::try_from(right.len()).map_err(io::Error::other)?;
+    // SAFETY: both pointers remain valid for their explicit lengths, and TRUE
+    // selects Windows' locale-independent, case-insensitive ordinal ordering.
+    let result = unsafe {
+        winapi::um::stringapiset::CompareStringOrdinal(
+            left.as_ptr(), left_len, right.as_ptr(), right_len, TRUE,
+        )
+    };
+    match result {
+        1 => Ok(std::cmp::Ordering::Less),
+        2 => Ok(std::cmp::Ordering::Equal),
+        3 => Ok(std::cmp::Ordering::Greater),
+        _ => Err(io::Error::last_os_error()),
+    }
+}
+
+fn update_env<F>(
+    entries: &mut Vec<EnvEntry>,
+    key: OsString,
+    value: Option<OsString>,
+    compare: &mut F,
+) -> io::Result<()>
+where
+    F: FnMut(&[u16], &[u16]) -> io::Result<std::cmp::Ordering>,
+{
+    let wide: Vec<u16> = key.encode_wide().collect();
+    let mut low = 0;
+    let mut high = entries.len();
+    let mut found = false;
+    while low < high {
+        let middle = low + (high - low) / 2;
+        match compare(&entries[middle].0, &wide)? {
+            std::cmp::Ordering::Less => low = middle + 1,
+            std::cmp::Ordering::Greater => high = middle,
+            std::cmp::Ordering::Equal => {
+                low = middle;
+                found = true;
+                break;
+            }
+        }
+    }
+    if found {
+        entries.remove(low);
+    }
+    if let Some(value) = value {
+        entries.insert(low, (wide, value));
+    }
+    Ok(())
 }
 
 fn build_env_block(
     overrides: Vec<(OsString, Option<OsString>)>,
     environment: crate::platform::process::SyncEnvironment,
 ) -> io::Result<Vec<u16>> {
-    use std::collections::BTreeMap;
-    // Windows env var names are case-INSENSITIVE at the kernel level
-    // (CreateProcessW + the env block accept any case but
-    // `GetEnvironmentVariable` lookups uppercase the name). If we dedup
-    // case-sensitively, an inherited "Path" and a caller override of
-    // "PATH" (or vice versa) end up as TWO entries in the block; the
-    // kernel picks one (whichever sorts first) and the override is
-    // silently dropped.
-    //
-    // Use the uppercased UTF-16 form as the canonical key. Preserve
-    // the original case of the most recent insert for emit.
-    let upper_key = |k: &OsStr| -> Vec<u16> {
-        // Simple ASCII upper-fold via OsStr→u16 chain. Windows
-        // CompareStringOrdinal uses a locale-independent uppercase
-        // fold; for env-var names (overwhelmingly ASCII) the simple
-        // version suffices and avoids a Win32 round-trip. Non-ASCII
-        // keys still dedup as long as their bytes match exactly.
-        k.encode_wide()
-            .map(|c| {
-                if (b'a' as u16..=b'z' as u16).contains(&c) {
-                    c - (b'a' as u16 - b'A' as u16)
-                } else {
-                    c
-                }
-            })
-            .collect()
-    };
-
+    // Windows environment names are case-insensitive in Unicode, not only
+    // ASCII. Keep the block in its required ordinal-insensitive sort order.
     let base = match environment {
         crate::platform::process::SyncEnvironment::Inherit => std::env::vars_os().collect(),
         crate::platform::process::SyncEnvironment::Explicit(base) => base,
     };
-
-    let mut env: BTreeMap<Vec<u16>, (OsString, OsString)> = BTreeMap::new();
-    for (k, v) in base {
-        env.insert(upper_key(&k), (k, v));
+    let mut env = Vec::new();
+    let mut compare = compare_env_names;
+    for (key, value) in base {
+        update_env(&mut env, key, Some(value), &mut compare)?;
     }
-
-    for (k, v) in overrides {
-        let ck = upper_key(&k);
-        match v {
-            Some(val) => {
-                env.insert(ck, (k, val));
-            }
-            None => {
-                env.remove(&ck);
-            }
-        }
+    for (key, value) in overrides {
+        update_env(&mut env, key, value, &mut compare)?;
     }
     let mut block: Vec<u16> = Vec::new();
-    for (_ck, (k, v)) in env {
-        block.extend(k.encode_wide());
+    for (wide, value) in env {
+        block.extend(wide);
         block.push(b'=' as u16);
-        block.extend(v.encode_wide());
+        block.extend(value.encode_wide());
         block.push(0);
     }
     if block.is_empty() {
@@ -1163,6 +1124,40 @@ mod tests {
                 None => std::env::remove_var(&self.key),
             }
         }
+    }
+
+    #[test]
+    fn environment_insertion_uses_logarithmic_comparisons() {
+        let mut entries = Vec::new();
+        let mut comparisons = 0usize;
+        let mut compare = |left: &[u16], right: &[u16]| {
+            comparisons += 1;
+            Ok(left.cmp(right))
+        };
+        for number in (0..1024).rev() {
+            update_env(&mut entries, format!("KEY_{number:04}").into(), Some("x".into()), &mut compare)
+                .unwrap();
+        }
+        assert_eq!(entries.len(), 1024);
+        assert!(comparisons < 12_000, "too many comparisons: {comparisons}");
+    }
+
+    #[test]
+    fn non_ascii_environment_overrides_are_case_insensitive() {
+        let block = build_env_block(
+            vec![(OsString::from("äVAR"), Some(OsString::from("new")))],
+            crate::platform::process::SyncEnvironment::Explicit(vec![(
+                OsString::from("Ävar"),
+                OsString::from("old"),
+            )]),
+        )
+        .unwrap();
+        let entries: Vec<String> = block
+            .split(|unit| *unit == 0)
+            .filter(|entry| !entry.is_empty())
+            .map(String::from_utf16_lossy)
+            .collect();
+        assert_eq!(entries, ["äVAR=new"]);
     }
 
     #[test]

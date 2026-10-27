@@ -471,7 +471,9 @@ impl InheritedChild {
         self.child.id()
     }
     pub fn try_wait(&mut self) -> io::Result<Option<i32>> {
-        self.child.try_wait()
+        self.child
+            .try_wait()
+            .map(|status| status.map(crate::independent_exit_code))
     }
     pub fn stop(&mut self, timeout: Duration) -> io::Result<()> {
         self.child.kill_tree()?;
@@ -510,7 +512,7 @@ pub fn spawn_inherited(
     let deadline = Instant::now() + timeout;
     check(deadline, cancelled)?;
     let mut child = spawn_owned_target(spec, detached)?;
-    child.retain_exit_identity();
+    child.retain_exit_identity()?;
     let mut child = InheritedChild {
         child,
         committed: false,
