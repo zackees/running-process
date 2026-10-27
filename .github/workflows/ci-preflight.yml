@@ -319,8 +319,8 @@ jobs:
           fi
           echo "::group::Rust toolchain diagnostics"
           command -v rustup >/dev/null 2>&1 && rustup show || true
-          command -v rustc >/dev/null 2>&1 && rustc -Vv || true
-          command -v cargo >/dev/null 2>&1 && cargo -V || true
+          command -v soldr >/dev/null 2>&1 && soldr rustc -Vv || true
+          command -v soldr >/dev/null 2>&1 && soldr cargo -V || true
           echo "::endgroup::"
 
       - name: Upload failure logs

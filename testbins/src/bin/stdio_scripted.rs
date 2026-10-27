@@ -12,6 +12,8 @@
 //!   command line: Windows caps a command line at 32,767 characters, and a
 //!   hex-encoded argument is twice the size of the bytes it carries.
 //! - `errhex:<hex>`    — write the hex-decoded raw bytes to stderr
+//! - `env:<name>`      — write one environment value to stdout
+//! - `cwd`             — write the current working directory to stdout
 //! - `flush`           — flush stdout then stderr (control interleaving)
 //! - `echo`           — copy all of stdin to stdout verbatim, then flush
 //! - `sleep-ms:<n>`   — sleep for `<n>` milliseconds
@@ -49,6 +51,10 @@ fn repeated_hex(directive: &str) -> (usize, Vec<u8>) {
 }
 
 fn main() {
+    #[cfg(windows)]
+    if report_wide_argument() {
+        return;
+    }
     let mut stdout = std::io::stdout();
     let mut stderr = std::io::stderr();
 
@@ -89,6 +95,16 @@ fn main() {
                 stderr.write_all(&bytes).expect("write repeated stderr hex");
             }
             stderr.flush().expect("flush stderr");
+        } else if let Some(name) = arg.strip_prefix("env:") {
+            let value = std::env::var(name).expect("fixture environment variable");
+            stdout
+                .write_all(value.as_bytes())
+                .expect("write environment");
+        } else if arg == "cwd" {
+            let cwd = std::env::current_dir().expect("fixture cwd");
+            stdout
+                .write_all(cwd.to_string_lossy().as_bytes())
+                .expect("write cwd");
         } else if arg == "flush" {
             stdout.flush().expect("flush stdout");
             stderr.flush().expect("flush stderr");
@@ -117,4 +133,20 @@ fn main() {
 
     stdout.flush().ok();
     stderr.flush().ok();
+}
+
+#[cfg(windows)]
+fn report_wide_argument() -> bool {
+    use std::os::windows::ffi::OsStrExt;
+
+    let mut args = std::env::args_os().skip(1);
+    if args.next().as_deref() != Some(std::ffi::OsStr::new("report-wide")) {
+        return false;
+    }
+    let arg = args.next().expect("wide argument");
+    let bytes: Vec<u8> = arg.encode_wide().flat_map(u16::to_le_bytes).collect();
+    std::io::stdout()
+        .write_all(&bytes)
+        .expect("write wide argument");
+    true
 }

@@ -434,6 +434,88 @@ pub fn spawn(command: &mut Command, stdio: SpawnStdio<'_>) -> std::io::Result<Sp
     spawn_with_env_policy(command, stdio, EnvironmentPolicy::Auto)
 }
 
+/// Spawn a contained argv command with caller-owned stdio handles.
+///
+/// `argv[0]` is the executable; no shell is introduced. On Windows arguments
+/// use standard CRT command-line quoting; custom parsers may interpret them
+/// differently. `cwd` selects an optional working directory. `env` contains overrides to
+/// the inherited environment. On Windows, callers must resolve a relative
+/// executable before overriding PATH or selecting a working directory. `cmd /C`
+/// script words are not accepted by this argv surface. Files in `stdio` are
+/// duplicated into the child and are never reopened by path. Piped output must
+/// be drained while waiting.
+/// On Unix this adapter ignores `drain_timeout` to keep the leader waitable;
+/// pipe EOF depends on every writer closing its handle. The returned
+/// synchronous child handle retains its identity through cleanup when no external
+/// reaper consumes it and SIGCHLD is not configured for automatic reaping;
+/// `wait` reports the process exit code (or negative Unix signal). `kill_tree`
+/// requests termination of the contained tree (best effort on Unix); callers
+/// needing confirmed termination must verify it separately. Dropping the handle also initiates
+/// containment cleanup. This API has no async counterpart.
+pub fn spawn_argv_with_stdio(
+    argv: &[std::ffi::OsString],
+    cwd: Option<&std::path::Path>,
+    env: Option<&[(std::ffi::OsString, std::ffi::OsString)]>,
+    stdio: SpawnStdio<'_>,
+) -> std::io::Result<SpawnedChild> {
+    let Some((program, args)) = argv.split_first() else {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "command argv must not be empty",
+        ));
+    };
+    if program.is_empty() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "command executable must not be empty",
+        ));
+    }
+    validate_spawn_argv(argv, cwd, env)?;
+    running_process_platform_internal::platform::process::validate_spawn_argv_platform(
+        argv, cwd, env,
+    )?;
+    let mut command = Command::new(program);
+    command.args(args);
+    if let Some(path) = cwd {
+        command.current_dir(path);
+    }
+    if let Some(entries) = env {
+        command.envs(entries.iter().map(|(key, value)| (key, value)));
+    }
+    // On Unix the legacy drain watcher reaps the leader. This adapter keeps
+    // it waitable for safe group cleanup; pipe EOF is still kernel-driven.
+    let stdio = running_process_platform_internal::platform::process::prepare_argv_stdio(stdio);
+    let mut child = spawn(&mut command, stdio)?;
+    child.retain_exit_identity()?;
+    Ok(child)
+}
+
+fn validate_spawn_argv(
+    argv: &[std::ffi::OsString],
+    cwd: Option<&std::path::Path>,
+    env: Option<&[(std::ffi::OsString, std::ffi::OsString)]>,
+) -> std::io::Result<()> {
+    let has_nul = |value: &std::ffi::OsStr| value.as_encoded_bytes().contains(&0);
+    let invalid_env = env.is_some_and(|entries| {
+        entries.iter().any(|(key, value)| {
+            key.is_empty()
+                || has_nul(key)
+                || has_nul(value)
+                || key.as_encoded_bytes().contains(&b'=')
+        })
+    });
+    if argv.iter().any(|arg| has_nul(arg))
+        || cwd.is_some_and(|path| has_nul(path.as_os_str()))
+        || invalid_env
+    {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "command, working directory, or environment contains invalid data",
+        ));
+    }
+    Ok(())
+}
+
 /// Spawn a contained child using an explicit environment policy.
 pub fn spawn_with_env_policy(
     command: &mut Command,

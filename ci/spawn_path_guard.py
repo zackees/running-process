@@ -17,6 +17,9 @@ RUST_SOURCE_ROOTS = (ROOT / "crates", ROOT / "testbins")
 # crate. Daemon/client/trampoline code that used to live in sibling
 # crates now lives at `crates/running-process/src/{daemon,client,bin}/`.
 ALLOWED_RUST_COMMAND_NEW = {
+    # argv-to-stdio adapter constructs Command only to route immediately
+    # through the existing sanitized contained spawn boundary (#1340).
+    Path("crates/running-process/src/spawn.rs"),
     # APE launch planning: `platform::ape::command` / `tokio_command` only
     # construct the command (the planned loader with the image as its first
     # argument, or the program unchanged). Nothing is spawned there; callers

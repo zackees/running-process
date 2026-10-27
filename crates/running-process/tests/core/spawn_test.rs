@@ -465,3 +465,589 @@ fn test_spawn_daemon_file_stdio_is_preserved() {
         "daemon output did not reach its file: {body:?}"
     );
 }
+
+#[test]
+fn spawn_argv_streams_exact_binary_into_owned_files() {
+    use std::ffi::OsString;
+    use std::fs::OpenOptions;
+
+    let dir = tempfile::tempdir().expect("temporary directory");
+    let output_path = dir.path().join("stdout.bin");
+    let error_path = dir.path().join("stderr.bin");
+    let output = OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .open(&output_path)
+        .expect("open output");
+    let errors = OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .open(&error_path)
+        .expect("open errors");
+    let argv: Vec<OsString> = [
+        testbin_path("testbin-stdio-scripted").into_os_string(),
+        "echo".into(),
+        "outrep:000d0aff:100000".into(),
+        "outhex:fe".into(),
+        "errhex:fa0d0a".into(),
+        "exit:17".into(),
+    ]
+    .into();
+    let mut child = running_process::spawn_argv_with_stdio(
+        &argv,
+        None,
+        None,
+        SpawnStdio {
+            stdin: StdioSource::Pipe,
+            stdout: StdioSource::File(&output),
+            stderr: StdioSource::File(&errors),
+            ..SpawnStdio::default()
+        },
+    )
+    .expect("spawn child with owned files");
+    drop(output);
+    drop(errors);
+    drop(child.stdin.take().expect("stdin handshake"));
+    assert_eq!(child.wait().expect("wait for child"), 17);
+    let mut expected = [0, 13, 10, 255].repeat(100_000);
+    expected.push(254);
+    assert_eq!(std::fs::read(output_path).expect("read output"), expected);
+    assert_eq!(
+        std::fs::read(error_path).expect("read stderr"),
+        [250, 13, 10]
+    );
+}
+
+#[test]
+fn spawn_argv_rejects_missing_executable() {
+    let error = match running_process::spawn_argv_with_stdio(&[], None, None, SpawnStdio::default())
+    {
+        Ok(_) => panic!("empty argv must not spawn a process"),
+        Err(error) => error,
+    };
+    assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
+}
+
+#[test]
+fn spawn_argv_keeps_the_opened_file_when_the_path_is_replaced() {
+    use std::fs::OpenOptions;
+
+    let dir = tempfile::tempdir().expect("temporary directory");
+    let original = dir.path().join("original");
+    let moved = dir.path().join("moved");
+    let output = OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .open(&original)
+        .expect("open output");
+    std::fs::rename(&original, &moved).expect("move opened file");
+    std::fs::write(&original, b"replacement").expect("create replacement");
+    let argv = [
+        testbin_path("testbin-stdio-scripted").into_os_string(),
+        "outhex:00ff0d0a".into(),
+    ];
+    let mut child = running_process::spawn_argv_with_stdio(
+        &argv,
+        None,
+        None,
+        SpawnStdio {
+            stdout: StdioSource::File(&output),
+            ..SpawnStdio::default()
+        },
+    )
+    .expect("spawn child");
+    assert_eq!(child.wait().expect("wait"), 0);
+    assert_eq!(
+        std::fs::read(moved).expect("read opened file"),
+        [0, 255, 13, 10]
+    );
+    assert_eq!(
+        std::fs::read(original).expect("read replacement"),
+        b"replacement"
+    );
+}
+
+#[test]
+fn spawn_argv_forwards_cwd_environment_and_literal_arguments() {
+    use std::ffi::OsString;
+    use std::fs::OpenOptions;
+
+    let dir = tempfile::tempdir().expect("temporary directory");
+    let output_path = dir.path().join("output");
+    let output = OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .open(&output_path)
+        .expect("open output");
+    let argv = [
+        testbin_path("testbin-stdio-scripted").into_os_string(),
+        "cwd".into(),
+        "out:|".into(),
+        "env:RP_FILE_SINK_TEST".into(),
+        "out:|literal $name & value".into(),
+    ];
+    let env = [(
+        OsString::from("RP_FILE_SINK_TEST"),
+        OsString::from("hello value"),
+    )];
+    let mut child = running_process::spawn_argv_with_stdio(
+        &argv,
+        Some(dir.path()),
+        Some(&env),
+        SpawnStdio {
+            stdout: StdioSource::File(&output),
+            ..SpawnStdio::default()
+        },
+    )
+    .expect("spawn child");
+    assert_eq!(child.wait().expect("wait"), 0);
+    let captured = std::fs::read_to_string(output_path).expect("read output");
+    let (cwd, suffix) = captured.split_once('|').expect("cwd separator");
+    assert_eq!(
+        std::fs::canonicalize(cwd).expect("child cwd"),
+        dir.path().canonicalize().unwrap()
+    );
+    assert_eq!(suffix, "hello value|literal $name & value");
+}
+
+#[test]
+fn spawn_argv_child_can_be_cancelled_without_hiding_its_failure() {
+    use std::fs::OpenOptions;
+
+    let dir = tempfile::tempdir().expect("temporary directory");
+    let output = OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .open(dir.path().join("output"))
+        .expect("open output");
+    let argv = [
+        testbin_path("testbin-stdio-scripted").into_os_string(),
+        "sleep-ms:30000".into(),
+    ];
+    let mut child = running_process::spawn_argv_with_stdio(
+        &argv,
+        None,
+        None,
+        SpawnStdio {
+            stdout: StdioSource::File(&output),
+            ..SpawnStdio::default()
+        },
+    )
+    .expect("spawn child");
+    child.kill().expect("cancel child");
+    assert_ne!(child.wait().expect("wait for cancelled child"), 0);
+}
+
+#[cfg(windows)]
+#[test]
+fn spawn_argv_preserves_non_scalar_windows_arguments() {
+    use std::ffi::OsString;
+    use std::fs::OpenOptions;
+    use std::os::windows::ffi::OsStringExt;
+
+    let dir = tempfile::tempdir().expect("temporary directory");
+    let path = dir.path().join("output");
+    let output = OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .open(&path)
+        .unwrap();
+    let units = [0xd800, b' ' as u16, b'"' as u16, b'\\' as u16];
+    let argv = [
+        testbin_path("testbin-stdio-scripted").into_os_string(),
+        "report-wide".into(),
+        OsString::from_wide(&units),
+    ];
+    let mut child = running_process::spawn_argv_with_stdio(
+        &argv,
+        None,
+        None,
+        SpawnStdio {
+            stdout: StdioSource::File(&output),
+            ..SpawnStdio::default()
+        },
+    )
+    .expect("spawn child");
+    drop(output);
+    assert_eq!(child.wait().expect("wait"), 0);
+    let expected: Vec<u8> = units.into_iter().flat_map(u16::to_le_bytes).collect();
+    assert_eq!(std::fs::read(path).unwrap(), expected);
+}
+
+#[test]
+fn spawn_argv_rejects_nul_and_invalid_environment_before_spawn() {
+    use std::ffi::OsString;
+
+    let program = testbin_path("testbin-stdio-scripted").into_os_string();
+    let invalid_args = [program.clone(), OsString::from("before\0after")];
+    assert!(running_process::spawn_argv_with_stdio(
+        &invalid_args,
+        None,
+        None,
+        SpawnStdio::default()
+    )
+    .is_err());
+    let invalid_env = [(OsString::from("BAD=KEY"), OsString::from("value"))];
+    assert!(running_process::spawn_argv_with_stdio(
+        &[program],
+        None,
+        Some(&invalid_env),
+        SpawnStdio::default()
+    )
+    .is_err());
+}
+
+#[cfg(unix)]
+#[test]
+fn spawn_argv_retains_leader_identity_until_cleanup() {
+    let argv = [
+        testbin_path("testbin-stdio-scripted").into_os_string(),
+        "exit:0".into(),
+    ];
+    let mut child =
+        running_process::spawn_argv_with_stdio(&argv, None, None, SpawnStdio::default())
+            .expect("spawn child");
+    let pid = child.id();
+    assert_eq!(child.wait().expect("wait"), 0);
+    // Exceed the existing drain watcher's 50 ms sampling interval.
+    std::thread::sleep(Duration::from_millis(250));
+    // SAFETY: `info` is a valid output buffer and `pid` is our still-owned child.
+    let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+    // SAFETY: waitid writes to `info`; WNOWAIT leaves the child identity reserved.
+    let status = unsafe {
+        libc::waitid(
+            libc::P_PID,
+            pid as libc::id_t,
+            &mut info,
+            libc::WEXITED | libc::WNOHANG | libc::WNOWAIT,
+        )
+    };
+    assert_eq!(status, 0, "child identity was reaped before cleanup");
+    drop(child);
+}
+
+#[cfg(not(target_os = "macos"))]
+#[test]
+fn spawn_argv_tree_cancellation_stops_descendants() {
+    use std::fs::OpenOptions;
+
+    let dir = tempfile::tempdir().expect("temporary directory");
+    let path = dir.path().join("output");
+    let output = OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .open(&path)
+        .expect("open output");
+    let argv = [
+        testbin_path("testbin-spawner").into_os_string(),
+        "1".into(),
+        testbin_path("testbin-sleeper").into_os_string(),
+    ];
+    let mut child = running_process::spawn_argv_with_stdio(
+        &argv,
+        None,
+        None,
+        SpawnStdio {
+            stdout: StdioSource::File(&output),
+            ..SpawnStdio::default()
+        },
+    )
+    .expect("spawn child");
+    drop(output);
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let grandchild = loop {
+        let text = std::fs::read_to_string(&path).unwrap_or_default();
+        if text.contains("READY") {
+            let pid = text
+                .lines()
+                .find_map(|line| line.strip_prefix("CHILD_PID="));
+            break pid.expect("child PID").parse::<u32>().expect("numeric PID");
+        }
+        assert!(Instant::now() < deadline, "spawner did not become ready");
+        std::thread::sleep(Duration::from_millis(25));
+    };
+    child.kill_tree().expect("terminate tree");
+    assert_ne!(child.wait().expect("wait for leader"), 0);
+    let dead = wait_until_dead(grandchild, Duration::from_secs(10));
+    if !dead {
+        force_kill(grandchild);
+    }
+    assert!(dead, "descendant survived tree cancellation");
+}
+
+#[cfg(windows)]
+#[test]
+fn spawn_argv_rejects_ambiguous_windows_lookup_and_shell_scripts() {
+    use std::ffi::OsString;
+
+    let env = [(OsString::from("PATH"), OsString::from("C:\\other"))];
+    assert!(running_process::spawn_argv_with_stdio(
+        &[OsString::from("gh")],
+        None,
+        Some(&env),
+        SpawnStdio::default()
+    )
+    .is_err());
+    let dir = tempfile::tempdir().expect("working directory");
+    assert!(running_process::spawn_argv_with_stdio(
+        &[OsString::from("gh.exe")],
+        Some(dir.path()),
+        None,
+        SpawnStdio::default()
+    )
+    .is_err());
+    let argv = [
+        OsString::from("cmd.exe"),
+        OsString::from("/C"),
+        OsString::from("echo safe"),
+    ];
+    assert!(
+        running_process::spawn_argv_with_stdio(&argv, None, None, SpawnStdio::default()).is_err()
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn spawn_argv_pipe_eof_waits_for_the_last_descendant_writer() {
+    use std::io::Read;
+    use std::sync::mpsc;
+
+    let argv = [
+        testbin_path("testbin-session-pipe-holder").into_os_string(),
+        testbin_path("testbin-sleeper").into_os_string(),
+    ];
+    let mut child = running_process::spawn_argv_with_stdio(
+        &argv,
+        None,
+        None,
+        SpawnStdio {
+            stdout: StdioSource::Pipe,
+            drain_timeout: Some(Duration::from_millis(100)),
+            ..SpawnStdio::default()
+        },
+    )
+    .expect("spawn pipe holder");
+    let mut stdout = child.stdout.take().expect("stdout pipe");
+    let (send, receive) = mpsc::channel();
+    std::thread::spawn(move || {
+        let mut bytes = Vec::new();
+        let result = stdout.read_to_end(&mut bytes).map(|_| bytes);
+        let _ = send.send(result);
+    });
+    assert_eq!(child.wait().expect("wait for leader"), 0);
+    assert!(matches!(
+        receive.recv_timeout(Duration::from_millis(250)),
+        Err(mpsc::RecvTimeoutError::Timeout)
+    ));
+    child.kill_tree().expect("stop remaining writer");
+    drop(child);
+    let bytes = receive
+        .recv_timeout(Duration::from_secs(10))
+        .expect("pipe EOF")
+        .expect("read");
+    assert!(String::from_utf8_lossy(&bytes).contains("GRANDCHILD_PID="));
+}
+
+#[cfg(windows)]
+#[test]
+fn spawn_argv_does_not_inherit_unrelated_handles() {
+    use pipe_helpers::*;
+    use std::fs::OpenOptions;
+
+    let pipe = create_inheritable_pipe();
+    let dir = tempfile::tempdir().expect("temporary directory");
+    let output = OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .open(dir.path().join("output"))
+        .expect("open output");
+    let argv = [testbin_path("testbin-sleeper").into_os_string()];
+    let mut child = running_process::spawn_argv_with_stdio(
+        &argv,
+        None,
+        None,
+        SpawnStdio {
+            stdout: StdioSource::File(&output),
+            ..SpawnStdio::default()
+        },
+    )
+    .expect("spawn child");
+    close(pipe.write_end);
+    let result = read_one_byte_with_timeout(pipe.read_end, Duration::from_secs(2));
+    close(pipe.read_end);
+    child.kill_tree().expect("terminate child");
+    let _ = child.wait();
+    assert!(
+        matches!(result, Ok(0)),
+        "unrelated handle leaked: {result:?}"
+    );
+}
+
+#[cfg(windows)]
+fn windows_file_dacl(file: &std::fs::File) -> Vec<u16> {
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Foundation::LocalFree;
+    use windows_sys::Win32::Security::Authorization::{
+        ConvertSecurityDescriptorToStringSecurityDescriptorW, GetSecurityInfo, SDDL_REVISION_1,
+        SE_FILE_OBJECT,
+    };
+    use windows_sys::Win32::Security::DACL_SECURITY_INFORMATION;
+
+    let mut descriptor = std::ptr::null_mut();
+    // SAFETY: the file handle is live and descriptor is a valid out pointer.
+    let status = unsafe {
+        GetSecurityInfo(
+            file.as_raw_handle().cast(),
+            SE_FILE_OBJECT,
+            DACL_SECURITY_INFORMATION,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            &mut descriptor,
+        )
+    };
+    assert_eq!(status, 0, "GetSecurityInfo failed");
+    let mut rendered = std::ptr::null_mut();
+    let mut length = 0;
+    // SAFETY: descriptor is live and both output pointers are valid.
+    let converted = unsafe {
+        ConvertSecurityDescriptorToStringSecurityDescriptorW(
+            descriptor,
+            SDDL_REVISION_1,
+            DACL_SECURITY_INFORMATION,
+            &mut rendered,
+            &mut length,
+        )
+    };
+    assert_ne!(converted, 0, "DACL conversion failed");
+    // SAFETY: the conversion returned `length` UTF-16 units at rendered.
+    let result = unsafe { std::slice::from_raw_parts(rendered, length as usize) }.to_vec();
+    // SAFETY: both allocations are owned Windows LocalAlloc outputs.
+    unsafe {
+        LocalFree(rendered.cast());
+        LocalFree(descriptor.cast());
+    }
+    result
+}
+
+#[cfg(windows)]
+#[test]
+fn spawn_argv_preserves_the_caller_file_dacl() {
+    use std::fs::OpenOptions;
+
+    let dir = tempfile::tempdir().expect("temporary directory");
+    let path = dir.path().join("output");
+    let output = OpenOptions::new()
+        .create_new(true)
+        .read(true)
+        .write(true)
+        .open(&path)
+        .expect("open output");
+    let before = windows_file_dacl(&output);
+    let argv = [
+        testbin_path("testbin-stdio-scripted").into_os_string(),
+        "outhex:00ff".into(),
+    ];
+    let mut child = running_process::spawn_argv_with_stdio(
+        &argv,
+        None,
+        None,
+        SpawnStdio {
+            stdout: StdioSource::File(&output),
+            ..SpawnStdio::default()
+        },
+    )
+    .expect("spawn child");
+    assert_eq!(child.wait().expect("wait"), 0);
+    assert_eq!(before, windows_file_dacl(&output));
+    drop(output);
+    assert_eq!(std::fs::read(path).expect("read output"), [0, 255]);
+}
+
+#[test]
+fn spawn_argv_timeout_preserves_output_and_nonzero_status() {
+    use std::fs::OpenOptions;
+
+    let dir = tempfile::tempdir().expect("temporary directory");
+    let path = dir.path().join("output");
+    let output = OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .open(&path)
+        .expect("open output");
+    let argv = [
+        testbin_path("testbin-stdio-scripted").into_os_string(),
+        "out:started".into(),
+        "sleep-ms:30000".into(),
+    ];
+    let mut child = running_process::spawn_argv_with_stdio(
+        &argv,
+        None,
+        None,
+        SpawnStdio {
+            stdout: StdioSource::File(&output),
+            ..SpawnStdio::default()
+        },
+    )
+    .expect("spawn child");
+    drop(output);
+    let setup_deadline = Instant::now() + Duration::from_secs(30);
+    while std::fs::read(&path).unwrap_or_default() != b"started" {
+        assert!(Instant::now() < setup_deadline, "child did not start");
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    let deadline = Instant::now() + Duration::from_millis(200);
+    while Instant::now() < deadline {
+        assert!(child.try_wait().expect("check child").is_none());
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    child.kill_tree().expect("stop timed-out child");
+    assert_ne!(child.wait().expect("wait for child"), 0);
+    drop(child);
+    assert_eq!(std::fs::read(path).expect("read output"), b"started");
+}
+
+#[cfg(unix)]
+#[test]
+fn identity_retention_rejects_an_active_reaping_watcher() {
+    let mut command = Command::new(testbin_path("testbin-stdio-scripted"));
+    command.arg("sleep-ms:30000");
+    let mut child = spawn(&mut command, SpawnStdio::default()).expect("spawn child");
+    let error = child
+        .retain_exit_identity()
+        .expect_err("watcher must be disabled");
+    assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
+    child.kill_tree().expect("stop child");
+    let _ = child.wait();
+}
+
+#[cfg(unix)]
+#[test]
+fn identity_retention_rejects_a_reaped_child() {
+    let mut command = Command::new(testbin_path("testbin-stdio-scripted"));
+    let stdio = SpawnStdio {
+        drain_timeout: None,
+        ..SpawnStdio::default()
+    };
+    let mut child = spawn(&mut command, stdio).expect("spawn child");
+    child.wait().expect("reap child");
+    child
+        .retain_exit_identity()
+        .expect_err("reaped identity cannot be retained");
+}
+
+#[cfg(unix)]
+#[test]
+fn spawn_argv_reports_negative_signal_in_wait_and_try_wait() {
+    let argv = [
+        testbin_path("testbin-stdio-scripted").into_os_string(),
+        "sleep-ms:30000".into(),
+    ];
+    let mut child =
+        running_process::spawn_argv_with_stdio(&argv, None, None, SpawnStdio::default())
+            .expect("spawn");
+    child.kill_tree().expect("kill tree");
+    assert_eq!(child.wait().expect("wait"), -9);
+    assert_eq!(child.try_wait().expect("try wait"), Some(-9));
+}

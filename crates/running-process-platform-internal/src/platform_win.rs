@@ -1200,6 +1200,60 @@ pub const fn process_can_replace_current_image() -> bool {
     false
 }
 
+pub(crate) fn validate_spawn_argv_platform(
+    argv: &[std::ffi::OsString],
+    cwd: Option<&std::path::Path>,
+    env: Option<&[(std::ffi::OsString, std::ffi::OsString)]>,
+) -> std::io::Result<()> {
+    let program = std::path::Path::new(argv.first().ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidInput, "command argv must not be empty"))?);
+    let path_override = env.is_some_and(|entries| {
+        entries
+            .iter()
+            .any(|(key, _)| key.eq_ignore_ascii_case("PATH"))
+    });
+    if !program.is_absolute() && (path_override || cwd.is_some()) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "resolve the Windows executable path before overriding PATH or selecting a working directory",
+        ));
+    }
+    let is_cmd = program.file_name().is_some_and(|name| {
+        name.eq_ignore_ascii_case("cmd") || name.eq_ignore_ascii_case("cmd.exe")
+    });
+    if is_cmd
+        && argv
+            .iter()
+            .skip(1)
+            .any(|arg| arg.eq_ignore_ascii_case("/c") || arg.eq_ignore_ascii_case("/k"))
+    {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "cmd script mode is not an argv operation; use the existing shell spawn API",
+        ));
+    }
+    Ok(())
+}
+
+
+pub(crate) fn prepare_argv_stdio(stdio: crate::platform::process::SpawnStdio<'_>) -> crate::platform::process::SpawnStdio<'_> { stdio }
+
+#[cfg(feature = "independent-spawn")]
+pub(crate) fn independent_exit_code(code: i32) -> i32 { code }
+
+#[cfg(all(test, feature = "independent-spawn"))]
+#[test]
+fn independent_exit_code_preserves_windows_high_bit() {
+    assert_eq!(independent_exit_code(i32::MIN), i32::MIN);
+    assert_eq!(independent_exit_code(0xC0000005u32 as i32), 0xC0000005u32 as i32);
+}
+
+#[cfg(test)]
+#[test]
+fn argv_platform_validation_rejects_empty_argv() {
+    let error = crate::platform::process::validate_spawn_argv_platform(&[], None, None).expect_err("empty argv must fail");
+    assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
+}
+
 #[cfg(test)]
 mod tests {
     #[cfg(feature = "async-process")]
