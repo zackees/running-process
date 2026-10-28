@@ -179,6 +179,8 @@ jobs:
       # or the binaries land in the host tree and the tests miss them.
       - name: Build test fixtures
         run: soldr cargo build -p testbins --target ${{ inputs.target }}
+      - name: Validate probe dependency graph
+        run: python -m ci.probe_graph_contract --target all
       # NOT built here: `testbins-tokio`, the console-subscriber fixture
       # (#788). It needs `--cfg tokio_unstable`, which forces a full tokio
       # rebuild, and it would have to be cross-compiled for this lane's
@@ -228,6 +230,8 @@ jobs:
           tool: nextest
       - name: Build test fixtures
         run: soldr cargo build -p testbins --target ${{ inputs.target }}
+      - name: Validate probe dependency graph
+        run: python -m ci.probe_graph_contract --target all
       - name: Archive Rust unit and integration tests (${{ inputs.features }})
         run: soldr cargo nextest archive --workspace --exclude running-process-py --features ${{ inputs.features }} --target ${{ inputs.target }} --profile aarch64-musl-archive --archive-file "${{ runner.temp }}/nextest-${{ inputs.label }}.tar.zst"
       - uses: actions/upload-artifact@v4
@@ -238,7 +242,7 @@ jobs:
           retention-days: 3
 
   # Cross-built lane, step 2: run the archived tests natively on `os`.
-  # Nothing compiles here, so the job needs neither soldr nor cargo.
+  # Soldr supplies the required toolchain front door for the archive runner.
   unit-test-run:
     name: unit-test (${{ inputs.label }})
     needs: unit-test-build
@@ -248,6 +252,11 @@ jobs:
       RUST_BACKTRACE: "full"
     steps:
       - uses: actions/checkout@v4
+      - name: Set up soldr
+        uses: zackees/setup-soldr@v0
+        with:
+          cache: false
+          prebuild-deps: none
       - name: Install cargo-nextest
         uses: taiki-e/install-action@v2
         with:
@@ -263,4 +272,4 @@ jobs:
       # build-time path, so extracting anywhere else (nextest's default temp
       # directory) leaves them spawning a file that does not exist.
       - name: Rust unit and integration tests (${{ inputs.features }})
-        run: cargo-nextest nextest run --archive-file "${{ runner.temp }}/nextest-archive/nextest-${{ inputs.label }}.tar.zst" --extract-to "${{ github.workspace }}" --extract-overwrite --workspace-remap "${{ github.workspace }}" --profile aarch64-musl-archive
+        run: soldr cargo nextest run --archive-file "${{ runner.temp }}/nextest-archive/nextest-${{ inputs.label }}.tar.zst" --extract-to "${{ github.workspace }}" --extract-overwrite --workspace-remap "${{ github.workspace }}" --profile aarch64-musl-archive

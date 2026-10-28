@@ -27,9 +27,8 @@ def _cargo_command(*args: str) -> list[str]:
     as a package, so a `from ci.soldr import ...` would fail at import.
     Kept in sync with ci/soldr.py:cargo_command.
     """
-    if shutil.which("soldr"):
-        return ["soldr", "cargo", *args]
-    return ["cargo", *args]
+    prefix = ["soldr"] if shutil.which("soldr") else ["uvx", "soldr"]
+    return [*prefix, "cargo", *args]
 DIST_DIR = ROOT / "dist"
 WORKFLOWS = {
     "linux-x86-build.yml": "wheels-linux-x86",

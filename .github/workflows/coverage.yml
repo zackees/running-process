@@ -69,10 +69,8 @@ jobs:
           cache-key-suffix: ubuntu-24.04-coverage
           prebuild-deps: none
 
-      # The instrumented builds themselves run plain cargo: cargo-llvm-cov
-      # must own RUSTC_WRAPPER, which soldr would replace (ci/soldr.py
-      # DIRECT_CARGO_ENV). setup-soldr still provisions the toolchain and the
-      # registry cache.
+      # The coverage lane passes cargo-llvm-cov's instrumentation wrapper
+      # through Soldr using SOLDR_RUSTC_WRAPPER.
       - name: Install llvm-tools-preview
         run: soldr rustup component add llvm-tools-preview --toolchain 1.95.0
 
@@ -198,12 +196,13 @@ jobs:
           RUSTUP_BIN="$(command -v rustup || true)"
           [ -n "$RUSTUP_BIN" ] && "$RUSTUP_BIN" show || true
           [ -n "$RUSTUP_BIN" ] && "$RUSTUP_BIN" toolchain list || true
-          RUSTC_BIN="$(command -v rustc || true)"
-          [ -n "$RUSTC_BIN" ] && "$RUSTC_BIN" -Vv || true
-          CARGO_BIN="$(command -v cargo || true)"
-          [ -n "$CARGO_BIN" ] && "$CARGO_BIN" -V || true
-          CLIPPY_BIN="$(command -v cargo-clippy || true)"
-          [ -n "$CLIPPY_BIN" ] && "$CLIPPY_BIN" -V || true
+          if command -v soldr >/dev/null 2>&1; then
+            soldr rustc -Vv || true
+            soldr cargo -V || true
+            soldr cargo clippy --version || true
+          else
+            echo "::warning::Soldr is unavailable; Rust tool version diagnostics could not run."
+          fi
           echo "::endgroup::"
 
       - name: Upload failure logs

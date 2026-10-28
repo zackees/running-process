@@ -11,6 +11,12 @@ from unittest.mock import patch
 from ci import build_wheel
 
 
+class MaturinCommandTest(unittest.TestCase):
+    def test_build_routes_through_soldr(self) -> None:
+        with patch("ci.soldr.shutil.which", return_value="/usr/local/bin/soldr"):
+            self.assertEqual(build_wheel.build_command("dev")[:3], ["soldr", "maturin", "build"])
+
+
 class TrampolineWheelTest(unittest.TestCase):
     def test_accepts_the_platform_trampoline_entry(self) -> None:
         suffix = ".exe" if build_wheel.platform.system() == "Windows" else ""
@@ -99,17 +105,26 @@ class PreserveDevPdbTest(unittest.TestCase):
 
 class MaturinTargetDirTest(unittest.TestCase):
     def test_maturin_does_not_share_soldrs_target_tree(self) -> None:
-        # soldr's cache hits are read-only; a Cargo maturin runs outside soldr
-        # cannot overwrite them, so maturin builds into its own tree.
+        # Separate target trees avoid overwriting read-only cached artifacts.
         with patch.object(build_wheel, "ROOT", Path("/repo")):
             self.assertEqual(
                 build_wheel.maturin_target_dir({"CARGO_TARGET_DIR": "/repo/target"}),
                 Path("/repo/target/maturin"),
             )
 
+    def test_coverage_uses_explicit_llvm_target(self) -> None:
+        with patch.object(build_wheel, "ROOT", Path("/repo")):
+            self.assertEqual(
+                build_wheel.maturin_target_dir({
+                    build_wheel.COVERAGE_ENV: "1",
+                    "CARGO_LLVM_COV_TARGET_DIR": "/other/coverage",
+                }),
+                Path("/other/coverage"),
+            )
+
     def test_coverage_keeps_the_shared_tree_cargo_llvm_cov_reads(self) -> None:
         with patch.object(build_wheel, "ROOT", Path("/repo")):
             self.assertEqual(
-                build_wheel.maturin_target_dir({build_wheel.DIRECT_CARGO_ENV: "1"}),
+                build_wheel.maturin_target_dir({build_wheel.COVERAGE_ENV: "1"}),
                 Path("/repo/target"),
             )

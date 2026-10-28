@@ -11,7 +11,6 @@
 use std::collections::HashMap;
 use std::path::Path;
 use std::path::PathBuf;
-use std::process::Command;
 
 use running_process::daemon::client::{DaemonClient, SpawnCommandRequest};
 
@@ -19,48 +18,22 @@ use super::{scaled, start_server_with_tempdb};
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
-/// Locate the env-dump testbin. Builds it on demand.
+/// Locate the env-dump testbin built before the test suite.
 fn env_dump_path() -> PathBuf {
-    let output = Command::new(env!("CARGO"))
-        .args([
-            "build",
-            "-p",
-            "testbins",
-            "--bin",
-            "testbin-env-dump",
-            "--message-format=json",
-        ])
-        .stderr(std::process::Stdio::inherit())
-        .output()
-        .expect("cargo build");
-    assert!(output.status.success(), "cargo build failed");
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    for line in stdout.lines() {
-        if !line.contains("\"compiler-artifact\"") || !line.contains("testbin-env-dump") {
-            continue;
-        }
-        if let Ok(v) = serde_json::from_str::<serde_json::Value>(line) {
-            if v["target"]["kind"]
-                .as_array()
-                .is_some_and(|a| a.iter().any(|k| k == "bin"))
-            {
-                if let Some(exe) = v["executable"].as_str() {
-                    let p = PathBuf::from(exe);
-                    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-                    while !p.exists() && std::time::Instant::now() < deadline {
-                        std::thread::sleep(std::time::Duration::from_millis(50));
-                    }
-                    assert!(p.exists(), "env-dump bin not found at {p:?}");
-                    return p;
-                }
-            }
-        }
-    }
-    panic!("env-dump executable not in cargo output");
+    let exe = std::env::current_exe().expect("current test executable");
+    let profile = exe
+        .parent()
+        .and_then(Path::parent)
+        .expect("test executable profile directory");
+    let path = profile.join(format!("testbin-env-dump{}", std::env::consts::EXE_SUFFIX));
+    assert!(
+        path.is_file(),
+        "env-dump fixture missing at {}; build it with soldr cargo build -p testbins",
+        path.display()
+    );
+    path
 }
 
-/// Parse a `KEY=VALUE\n` file into a HashMap. Wait briefly for it
-/// to appear since the daemon's spawned process is async.
 fn read_env_file(path: &Path) -> HashMap<String, String> {
     let deadline = std::time::Instant::now() + scaled(std::time::Duration::from_secs(5));
     while !path.exists() && std::time::Instant::now() < deadline {

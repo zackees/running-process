@@ -581,22 +581,14 @@ fn assert_new_coverage_profiles_are_valid(
         "graceful broker exit must write at least one new .profraw"
     );
 
-    let sysroot = Command::new("rustc")
-        .args(["--print", "sysroot"])
-        .output()
-        .expect("run rustc to locate llvm-profdata");
-    assert!(sysroot.status.success(), "rustc --print sysroot failed");
-    let sysroot = std::path::PathBuf::from(
-        String::from_utf8(sysroot.stdout)
-            .expect("UTF-8 sysroot")
-            .trim(),
+    let llvm_profdata = std::path::PathBuf::from(
+        std::env::var_os("RUNNING_PROCESS_LLVM_PROFDATA")
+            .expect("llvm-profdata fixture missing; run coverage through the test entrypoint"),
     );
-    let llvm_profdata = std::fs::read_dir(sysroot.join("lib/rustlib"))
-        .expect("read rustlib targets")
-        .flatten()
-        .map(|entry| entry.path().join("bin/llvm-profdata"))
-        .find(|candidate| candidate.is_file())
-        .expect("llvm-tools-preview llvm-profdata");
+    assert!(
+        llvm_profdata.is_file(),
+        "llvm-profdata fixture is missing: {llvm_profdata:?}"
+    );
 
     for profile in new_profiles {
         let output = Command::new(&llvm_profdata)
