@@ -45,16 +45,16 @@ the only bind mount.
 | `running-process-dev-cargo`     | `/usr/local/cargo`  | `CARGO_HOME` — registry, git db, fingerprints |
 | `running-process-dev-rustup`    | `/usr/local/rustup` | `RUSTUP_HOME` — installed toolchains       |
 | `running-process-dev-uv`        | `/uv`               | `UV_PROJECT_ENVIRONMENT` + `UV_CACHE_DIR`  |
+| `running-process-dev-soldr`     | `/root/.soldr`      | Soldr managed state and cache              |
 | bind mount                       | `/work`             | Source tree (live, read-write)             |
 
-soldr is intentionally **not** installed in the dev image. Direct cargo via the `CARGO_TARGET_DIR` volume
-gives us the mtime-fingerprint caching benefit we actually need without
-soldr's zccache integration breaking on session-start inside fresh
-containers. The repo's Python entrypoints (`ci.install` / `ci.test` /
-`ci.lint` / `build.py`) all detect `shutil.which("soldr")` and fall
-through to direct cargo when soldr is absent, so `./test` / `./lint` /
-`uv run build.py` work end-to-end inside the container without
-modification.
+The managed image uses the `running-process-dev:soldr-v1` tag, so existing
+`running-process-dev:latest` images are not reused; the new image is built on first use. Soldr is installed
+in the image outside the mounted toolchain volumes. The
+`cargo` driver subcommand routes arguments through `soldr cargo`, and the
+repository's test, lint, and wheel entrypoints use the same managed toolchain. Existing Rustup volumes retain their previous default. The first
+`soldr cargo` build provisions the repository's pinned toolchain; run
+`soldr toolchain ensure` first if you need a compiler probe before that build.
 
 Why `UV_PROJECT_ENVIRONMENT` is redirected: by default `uv sync` creates
 `.venv/` inside the project. With source bind-mounted that means Linux
@@ -156,10 +156,8 @@ first mount).
 - **No `COPY` of source code into the Dockerfile.** Source is a volume mount;
   every edit on the host is immediately visible inside the container without
   layer-cache invalidation.
-- **soldr is intentionally NOT installed** (see the table above for rationale).
-  soldr 0.7.55's zccache integration also fails
-  reliably inside fresh containers with a "private daemon cache dir mismatch"
-  on session-start; direct cargo via the named volume sidesteps the issue.
+- **Soldr stays available across volume mounts.** Its executable and Python
+  environment are installed outside `/usr/local/cargo` and `/usr/local/rustup`.
 - **No `cargo clean`** is ever invoked by the image or driver — that would
   wipe the volume-mounted `target/`.
 - **No default `-it`**: Git-Bash on Windows fools `isatty()` (mintty isn't

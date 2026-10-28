@@ -15,7 +15,7 @@
 # (Dockerfile.linux-build, .linux-lint, .linux-pytest); none of those are
 # touched by this image. Driver: ci/dev_docker.py.
 
-FROM rust:1.94.1-bookworm
+FROM rust:1.95.0-bookworm@sha256:6258907abe69656e41cd992e0b705cdcfabcbbe3db374f92ed2d47121282d4a1
 
 # Build deps:
 #   build-essential / pkg-config / libssl-dev — for any cc-rs / -sys crates
@@ -36,8 +36,7 @@ RUN apt-get update \
         python3-dev \
         python3-pip \
         python3-venv \
-        zstd \
- && rm -rf /var/lib/apt/lists/*
+        zstd
 
 # gdb is for the test-watchdog (crates/test-watchdog) to capture all-thread
 # backtraces when a Rust integration test hangs — see CLAUDE.md "Per-test
@@ -48,31 +47,18 @@ RUN apt-get update \
 # volume mount.
 RUN curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR=/usr/local/bin sh
 
-# Pin the toolchain at image-build time, matching rust-toolchain.toml at
-# the repo root (channel 1.94.1, components clippy + rustfmt). The image's
-# CARGO_HOME=/usr/local/cargo and RUSTUP_HOME=/usr/local/rustup are mounted
-# by named volumes at run time; Docker initializes empty volumes with the
-# image content on first mount so the pre-installed toolchain survives.
-RUN rustup default 1.94.1 \
- && rustup component add clippy rustfmt
+# Install Soldr outside the mounted Cargo and Rustup volumes, so the
+# managed command remains available when those volumes are attached.
+RUN UV_TOOL_DIR=/opt/uv-tools UV_TOOL_BIN_DIR=/usr/local/bin uv tool install "soldr==0.9.41"
 
-# soldr is INTENTIONALLY NOT installed inside this image.
-#
-# soldr 0.7.55's zccache integration also breaks reliably inside fresh
-# containers with a "private daemon cache dir mismatch" on session-start;
-# until that's tracked down upstream, direct cargo via the named
-# CARGO_TARGET_DIR volume gives us the caching benefit we actually need
-# (mtime fingerprint survival across container restarts) without the
-# layered failure mode.
-#
-# The Python entrypoints (ci.install / ci.test / ci.lint / build.py) all
-# detect `shutil.which("soldr")` and gracefully fall through to direct
-# cargo when soldr is absent — verified in ci/install.py and observed in
-# the build wheel / test / lint paths.
+# Seed the toolchain matching rust-toolchain.toml into the image. New named
+# volumes inherit these files on their first mount.
+RUN soldr rustup default 1.95.0 \
+ && soldr rustup component add clippy rustfmt
 
 # Set the dev paths explicitly so future base-image migrations don't
-# silently change them. CARGO_TARGET_DIR is set AFTER cargo install above
-# so the soldr build doesn't leak artifacts into the image at /work/target.
+# silently change them. CARGO_TARGET_DIR is set after tool installation so build artifacts live in
+# the mounted target volume.
 ENV CARGO_TARGET_DIR=/work/target
 
 # uv writes its venv into the project directory by default; redirect it
