@@ -498,6 +498,10 @@ fn fd_table_remove(fd: c_int) -> Option<String> {
 /// This is a libc-ABI extern "C" fn. The C runtime invokes it with
 /// arguments matching the standard POSIX `open(2)` signature; we
 /// trust those.
+// nightly-2026-08-15 (the Dylint driver's compiler) denies a non-variadic
+// definition of a symbol std calls; C-variadic definitions are unstable on
+// the stable pin, and `unknown_lints` keeps stable quiet about the name.
+#[allow(unknown_lints, invalid_runtime_symbol_definitions)]
 #[no_mangle]
 pub unsafe extern "C" fn open(path: *const c_char, flags: c_int) -> c_int {
     let real = real_open();
