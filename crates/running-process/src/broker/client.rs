@@ -300,6 +300,101 @@ pub fn connect_to_backend(
     })
 }
 
+/// [`connect_to_backend`] under one caller-supplied wall-clock budget.
+///
+/// `timeout` covers the whole call: the test seam, the cached-endpoint
+/// Hello-skip attempt, the broker Hello round-trip, the optional handoff
+/// wait, and the final connect to `Negotiated.backend_pipe`. The work runs
+/// on a helper thread (the same pattern as the bounded Hello); when the
+/// budget elapses the caller gets [`BrokerClientError::BackendConnect`]
+/// whose [`io::Error`] has kind [`io::ErrorKind::TimedOut`] and carries a
+/// [`ConnectTimedOut`] (see [`BrokerClientError::connect_timed_out`]). An
+/// abandoned helper thread drops whatever stream it later obtains.
+///
+/// A timeout error is used instead of a new enum variant so exhaustive
+/// matches on [`BrokerClientError`] keep compiling.
+pub fn connect_to_backend_within(
+    request: ConnectBackendRequest<'_>,
+    timeout: Duration,
+) -> Result<BackendConnection, BrokerClientError> {
+    let owned = OwnedConnectBackendRequest::from_request(&request);
+    let (tx, rx) = mpsc::channel();
+    // Free-function `thread::spawn` (a thread, not a process spawn), same as
+    // `broker_hello`.
+    thread::spawn(move || {
+        let _ = tx.send(connect_to_backend(owned.as_request()));
+    });
+    match rx.recv_timeout(timeout) {
+        Ok(result) => result,
+        Err(_) => Err(BrokerClientError::BackendConnect(io::Error::new(
+            io::ErrorKind::TimedOut,
+            ConnectTimedOut { budget: timeout },
+        ))),
+    }
+}
+
+/// Owned copy of [`ConnectBackendRequest`] so the bounded connect can move
+/// it onto its helper thread.
+struct OwnedConnectBackendRequest {
+    broker_endpoint: String,
+    service_name: String,
+    wanted_version: String,
+    self_version: String,
+    cached_backend_endpoint: Option<String>,
+    client_version: String,
+    client_lib_name: String,
+    client_lib_version: String,
+    client_keepalive_secs: u64,
+    adopt_handed_off_connection: bool,
+    handoff_ready_timeout: Duration,
+}
+
+impl OwnedConnectBackendRequest {
+    fn from_request(request: &ConnectBackendRequest<'_>) -> Self {
+        Self {
+            broker_endpoint: request.broker_endpoint.to_owned(),
+            service_name: request.service_name.to_owned(),
+            wanted_version: request.wanted_version.to_owned(),
+            self_version: request.self_version.to_owned(),
+            cached_backend_endpoint: request.cached_backend_endpoint.map(str::to_owned),
+            client_version: request.client_version.to_owned(),
+            client_lib_name: request.client_lib_name.to_owned(),
+            client_lib_version: request.client_lib_version.to_owned(),
+            client_keepalive_secs: request.client_keepalive_secs,
+            adopt_handed_off_connection: request.adopt_handed_off_connection,
+            handoff_ready_timeout: request.handoff_ready_timeout,
+        }
+    }
+
+    fn as_request(&self) -> ConnectBackendRequest<'_> {
+        ConnectBackendRequest {
+            broker_endpoint: &self.broker_endpoint,
+            service_name: &self.service_name,
+            wanted_version: &self.wanted_version,
+            self_version: &self.self_version,
+            cached_backend_endpoint: self.cached_backend_endpoint.as_deref(),
+            client_version: &self.client_version,
+            client_lib_name: &self.client_lib_name,
+            client_lib_version: &self.client_lib_version,
+            client_keepalive_secs: self.client_keepalive_secs,
+            adopt_handed_off_connection: self.adopt_handed_off_connection,
+            handoff_ready_timeout: self.handoff_ready_timeout,
+        }
+    }
+}
+
+/// The budget given to [`connect_to_backend_within`] elapsed.
+///
+/// Carried inside the [`io::Error`] of
+/// [`BrokerClientError::BackendConnect`]; read it with
+/// [`BrokerClientError::connect_timed_out`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
+#[error("backend connect did not complete within {budget:?}")]
+pub struct ConnectTimedOut {
+    /// The budget that elapsed.
+    pub budget: Duration,
+}
+
 /// Read the [`RUNNING_PROCESS_FAKE_BACKEND_ENV`] test seam, if active.
 ///
 /// Returns `Some(endpoint)` only when the variable is set to a non-empty
@@ -593,6 +688,18 @@ pub enum BrokerClientError {
 }
 
 impl BrokerClientError {
+    /// The [`ConnectTimedOut`] from [`connect_to_backend_within`], if this
+    /// error is its budget elapsing.
+    pub fn connect_timed_out(&self) -> Option<ConnectTimedOut> {
+        match self {
+            BrokerClientError::BackendConnect(source) => source
+                .get_ref()
+                .and_then(|inner| inner.downcast_ref::<ConnectTimedOut>())
+                .copied(),
+            _ => None,
+        }
+    }
+
     /// Classify a broker refusal into a stable, matchable kind (#433 R7).
     ///
     /// Returns `Some` only for [`BrokerClientError::Refused`]; every other
