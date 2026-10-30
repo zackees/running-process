@@ -619,8 +619,8 @@ The Linux quick job runs both repository-owned lints:
 `running_process_platform_boundary` checks the platform boundary. Both
 negative-fixture suites and both workspace lint passes are required.
 
-CI uses setup-soldr's managed prebuilt `cargo-dylint` and `dylint-link` 6.0.3
-with `nightly-2026-05-28`; the lint crates retain their locked 6.0.1 library
+CI uses setup-soldr's managed prebuilt `cargo-dylint` and `dylint-link` 6.2.0
+with `nightly-2026-08-15`; the lint crates pin the matching 6.2.0 library
 dependencies. Driver fallback is disabled. The declared `cfg(all())`
 `dylint-link` is preserved with `SOLDR_LINKER=default` while
 [soldr#3483](https://github.com/zackees/soldr/issues/3483) remains open.
