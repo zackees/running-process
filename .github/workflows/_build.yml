@@ -208,9 +208,9 @@ jobs:
             done
           fi
           echo "::group::Rust toolchain diagnostics"
-          command -v rustup >/dev/null 2>&1 && rustup show || true
-          command -v rustup >/dev/null 2>&1 && rustup toolchain list || true
           if command -v soldr >/dev/null 2>&1; then
+            soldr rustup show || true
+            soldr rustup toolchain list || true
             soldr rustc -Vv || true
             soldr cargo -V || true
             soldr cargo clippy --version || true
