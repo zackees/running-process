@@ -373,7 +373,6 @@ jobs:
         env:
           SOLDR_DYLINT_DRIVER_FALLBACK: "off"
         with:
-          version: "0.9.29"
           cache: true
           ci-tests: true
           job-status: ${{ job.status }}
