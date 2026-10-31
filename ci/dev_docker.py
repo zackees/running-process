@@ -46,15 +46,16 @@ import subprocess
 import sys
 from pathlib import Path
 
-IMAGE = "running-process-dev:latest"
+IMAGE = "running-process-dev:soldr-v1"
 DOCKERFILE = "docker/dev/Dockerfile"
 
 VOL_TARGET = "running-process-dev-target"
 VOL_CARGO = "running-process-dev-cargo"
 VOL_RUSTUP = "running-process-dev-rustup"
 VOL_UV = "running-process-dev-uv"
+VOL_SOLDR = "running-process-dev-soldr"
 
-ALL_VOLUMES = (VOL_TARGET, VOL_CARGO, VOL_RUSTUP, VOL_UV)
+ALL_VOLUMES = (VOL_TARGET, VOL_CARGO, VOL_RUSTUP, VOL_UV, VOL_SOLDR)
 
 
 def repo_root() -> Path:
@@ -100,6 +101,7 @@ def docker_run(argv: list[str], *, interactive: bool = False) -> int:
         "-v", f"{VOL_CARGO}:/usr/local/cargo",
         "-v", f"{VOL_RUSTUP}:/usr/local/rustup",
         "-v", f"{VOL_UV}:/uv",
+        "-v", f"{VOL_SOLDR}:/root/.soldr",
         "-w", "/work",
     ]
     # -it breaks Git-Bash on Windows (mintty fools isatty); opt in via env
@@ -120,15 +122,10 @@ def docker_run(argv: list[str], *, interactive: bool = False) -> int:
 
 
 def cmd_cargo(args: list[str]) -> int:
-    """Forward `cargo <args>` to the container's cargo.
-
-    soldr is intentionally not installed in the dev image. The named
-    CARGO_TARGET_DIR volume already gives the mtime-fingerprint caching we
-    need across container restarts.
-    """
+    """Forward Cargo arguments through the container's managed Soldr."""
     if ensure_image_built() != 0:
         return 1
-    return docker_run(["cargo", *args])
+    return docker_run(["soldr", "cargo", *args])
 
 
 def cmd_test(args: list[str]) -> int:
