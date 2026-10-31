@@ -108,7 +108,7 @@ rustc_session::declare_lint_pass!(RunningProcessEnvLiteral => [
 pub fn register_lints(sess: &rustc_session::Session, lint_store: &mut rustc_lint::LintStore) {
     dylint_linting::init_config(sess);
     lint_store.register_lints(&[RUNNING_PROCESS_ENV_LITERAL, RUNNING_PROCESS_ENV_DIRECT]);
-    lint_store.register_late_pass(|_| Box::new(RunningProcessEnvLiteral));
+    lint_store.register_late_lint_pass(Box::new(|_| Box::new(RunningProcessEnvLiteral)));
 }
 
 /// The standard functions that read or write one variable by name.
@@ -209,5 +209,5 @@ fn ui() {
     // so the fixture failed with "could not read ...dll". The lint library is
     // a host cdylib, so building it for the host is always correct.
     std::env::remove_var("CARGO_BUILD_TARGET");
-    dylint_testing::ui_test(env!("CARGO_PKG_NAME"), "ui");
+    dylint_testing::ui_test(env!("CARGO_CRATE_NAME"), "ui");
 }

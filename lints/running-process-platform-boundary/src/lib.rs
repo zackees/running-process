@@ -646,5 +646,5 @@ fn ui() {
     // so the fixture failed with "could not read ...dll". The lint library is
     // a host cdylib, so building it for the host is always correct.
     std::env::remove_var("CARGO_BUILD_TARGET");
-    dylint_testing::ui_test(env!("CARGO_PKG_NAME"), "ui");
+    dylint_testing::ui_test(env!("CARGO_CRATE_NAME"), "ui");
 }

@@ -27,8 +27,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 
-NIGHTLY = "nightly-2026-05-28"
-DYLINT_VERSION = "6.0.3"
+NIGHTLY = "nightly-2026-08-15"
+DYLINT_VERSION = "6.2.0"
 REQUIRE_ENV = "RUNNING_PROCESS_REQUIRE_DYLINT"
 # Keep Dylint's nightly artifacts apart from stable Clippy's target directory.
 TARGET_DIR = ROOT / "target" / "dylint"
