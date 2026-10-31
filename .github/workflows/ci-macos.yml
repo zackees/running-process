@@ -14,6 +14,7 @@ permissions:
 jobs:
   x86:
     uses: ./.github/workflows/ci-preflight.yml
+    secrets: inherit
     with:
       os: macos-15-intel
       label: macos-x86
@@ -23,6 +24,7 @@ jobs:
 
   arm:
     uses: ./.github/workflows/ci-preflight.yml
+    secrets: inherit
     with:
       os: macos-14
       label: macos-arm

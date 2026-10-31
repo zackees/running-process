@@ -104,8 +104,13 @@ jobs:
       # an explicit global false still disables every save (#1306).
       - name: Set up soldr (toolchain + build cache)
         uses: zackees/setup-soldr@v0
+        env:
+          SOLDR_S3_CACHE_ACCESS_KEY: ${{ secrets.SOLDR_S3_CACHE_ACCESS_KEY }}
+          SOLDR_S3_CACHE_SECRET_KEY: ${{ secrets.SOLDR_S3_CACHE_SECRET_KEY }}
         with:
           cache: true
+          s3-bucket: forge-ci-cache
+          s3-endpoint: sfo3.digitaloceanspaces.com
           ci-tests: true
           save-cache: auto
           job-status: ${{ job.status }}
@@ -371,9 +376,13 @@ jobs:
       - name: Set up managed Dylint tools and compiler cache
         uses: zackees/setup-soldr@v0
         env:
+          SOLDR_S3_CACHE_ACCESS_KEY: ${{ secrets.SOLDR_S3_CACHE_ACCESS_KEY }}
+          SOLDR_S3_CACHE_SECRET_KEY: ${{ secrets.SOLDR_S3_CACHE_SECRET_KEY }}
           SOLDR_DYLINT_DRIVER_FALLBACK: "off"
         with:
           cache: true
+          s3-bucket: forge-ci-cache
+          s3-endpoint: sfo3.digitaloceanspaces.com
           ci-tests: true
           job-status: ${{ job.status }}
           save-cache: auto
