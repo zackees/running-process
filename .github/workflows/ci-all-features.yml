@@ -66,8 +66,13 @@ jobs:
       # optional three-OS lane must not grow main's cache budget (#1216).
       - name: Set up soldr (toolchain + build cache)
         uses: zackees/setup-soldr@v0
+        env:
+          SOLDR_S3_CACHE_ACCESS_KEY: ${{ secrets.SOLDR_S3_CACHE_ACCESS_KEY }}
+          SOLDR_S3_CACHE_SECRET_KEY: ${{ secrets.SOLDR_S3_CACHE_SECRET_KEY }}
         with:
           cache: true
+          s3-bucket: forge-ci-cache
+          s3-endpoint: sfo3.digitaloceanspaces.com
           save-cache: "false"
           cache-key-suffix: ${{ matrix.label }}-all-features
           prebuild-deps: none

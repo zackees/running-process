@@ -91,8 +91,13 @@ jobs:
       # compile cold.
       - name: Set up soldr (toolchain + build cache)
         uses: zackees/setup-soldr@v0
+        env:
+          SOLDR_S3_CACHE_ACCESS_KEY: ${{ secrets.SOLDR_S3_CACHE_ACCESS_KEY }}
+          SOLDR_S3_CACHE_SECRET_KEY: ${{ secrets.SOLDR_S3_CACHE_SECRET_KEY }}
         with:
           cache: true
+          s3-bucket: forge-ci-cache
+          s3-endpoint: sfo3.digitaloceanspaces.com
           save-cache: ${{ github.ref == 'refs/heads/main' && inputs['build-mode'] != 'release' && 'auto' || 'false' }}
           cache-key-suffix: ${{ inputs.runs-on }}-${{ inputs.build-mode || 'dev' }}
           prebuild-deps: none

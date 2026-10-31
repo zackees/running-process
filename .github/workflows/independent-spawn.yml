@@ -79,8 +79,13 @@ jobs:
       # cache (CACHE-025, zackees/ci.yml#209). Saves are main-only (#1216).
       - name: Set up soldr (toolchain + build cache)
         uses: zackees/setup-soldr@v0
+        env:
+          SOLDR_S3_CACHE_ACCESS_KEY: ${{ secrets.SOLDR_S3_CACHE_ACCESS_KEY }}
+          SOLDR_S3_CACHE_SECRET_KEY: ${{ secrets.SOLDR_S3_CACHE_SECRET_KEY }}
         with:
           cache: true
+          s3-bucket: forge-ci-cache
+          s3-endpoint: sfo3.digitaloceanspaces.com
           save-cache: ${{ github.ref == 'refs/heads/main' && 'auto' || 'false' }}
           cache-key-suffix: independent-fixture-${{ matrix.target }}
           prebuild-deps: none
@@ -146,8 +151,13 @@ jobs:
       # cache (CACHE-025, zackees/ci.yml#209). Saves are main-only (#1216).
       - name: Set up soldr (toolchain + build cache)
         uses: zackees/setup-soldr@v0
+        env:
+          SOLDR_S3_CACHE_ACCESS_KEY: ${{ secrets.SOLDR_S3_CACHE_ACCESS_KEY }}
+          SOLDR_S3_CACHE_SECRET_KEY: ${{ secrets.SOLDR_S3_CACHE_SECRET_KEY }}
         with:
           cache: true
+          s3-bucket: forge-ci-cache
+          s3-endpoint: sfo3.digitaloceanspaces.com
           save-cache: ${{ github.ref == 'refs/heads/main' && 'auto' || 'false' }}
           cache-key-suffix: independent-scheduler-${{ matrix.os }}
           prebuild-deps: none

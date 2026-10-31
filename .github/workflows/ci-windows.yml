@@ -11,6 +11,7 @@ permissions:
 jobs:
   x86:
     uses: ./.github/workflows/ci-preflight.yml
+    secrets: inherit
     with:
       os: windows-latest
       label: windows-x86
@@ -20,6 +21,7 @@ jobs:
 
   arm:
     uses: ./.github/workflows/ci-preflight.yml
+    secrets: inherit
     with:
       os: windows-11-arm
       label: windows-arm
