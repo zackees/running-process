@@ -327,7 +327,7 @@ jobs:
             done
           fi
           echo "::group::Rust toolchain diagnostics"
-          command -v rustup >/dev/null 2>&1 && rustup show || true
+          command -v soldr >/dev/null 2>&1 && soldr rustup show || true
           command -v soldr >/dev/null 2>&1 && soldr rustc -Vv || true
           command -v soldr >/dev/null 2>&1 && soldr cargo -V || true
           echo "::endgroup::"
