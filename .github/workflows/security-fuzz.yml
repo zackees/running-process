@@ -117,7 +117,7 @@ jobs:
           linker: platform-default
 
       - name: Install nightly toolchain
-        run: rustup toolchain install nightly --profile minimal
+        run: soldr rustup toolchain install nightly --profile minimal
 
       - name: Restore fuzz corpus
         id: fuzz-corpus
