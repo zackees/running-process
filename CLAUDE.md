@@ -77,6 +77,13 @@ presented as an unexplained 30s+ hang (#747). Any new way of invoking the
 suite has to build the fixtures first, with a matching `--target` /
 `--target-dir` when the tests do not run against the host tree.
 
+The resolved probe dependency graph is checked across all targets before the
+suite by `uv run --no-project --module ci.probe_graph_contract`. Run that preflight
+separately before direct `soldr cargo` test or nextest invocations. For the
+all-features interposer tests, use `./test --all-features` so the platform
+fixtures are built before nextest; the tests reject missing preparation instead
+of invoking a nested build while Cargo holds its locks.
+
 **`uv run` policy.** Avoid bare `uv run …`: it auto-syncs the maturin project and forces a full native rebuild on every invocation (see zackees/soldr#805). Always pass `--no-project` for pure-Python scripts, `--no-sync` to reuse the warm venv, or `--frozen` to lock to the existing lockfile. The escape hatch for a legitimate full-rebuild is `./test`.
 
 **Per-test deadlock guard.** Every test (Rust + Python) gets a hard 2-minute wall-clock kill so a hung test can't stall CI indefinitely:

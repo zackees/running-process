@@ -12,7 +12,8 @@ from collections.abc import Sequence
 from pathlib import Path
 
 from ci.dev_build import ensure_dev_wheel
-from ci.soldr import DIRECT_CARGO_ENV, cargo_command
+from ci.probe_graph_contract import check as check_probe_graph
+from ci.soldr import COVERAGE_ENV, cargo_command, soldr_command
 
 ROOT = Path(__file__).resolve().parent.parent
 IN_RUNNING_PROCESS_ENV = "IN_RUNNING_PROCESS"
@@ -328,11 +329,28 @@ def run(cmd: list[str], extra_env: dict[str, str] | None = None) -> int:
     return subprocess.run(cmd, cwd=ROOT, env=env).returncode
 
 
+def _interposer_build_command(platform_name: str) -> list[str]:
+    """Build the current platform's test interposer before nextest owns locks."""
+    if platform_name.startswith("linux"):
+        platform, features = "linux", ["--features", "test-seams"]
+    elif platform_name == "darwin":
+        platform, features = "macos", ["--features", "test-seams"]
+    elif platform_name == "win32":
+        platform, features = "windows", []
+    else:
+        raise RuntimeError(f"unsupported interposer test platform: {platform_name}")
+    return cargo_command("build", "-p", f"running-process-probe-interposer-{platform}", *features)
+
+
+def _probe_tree_fixture() -> str:
+    return check_probe_graph()
+
+
 def _find_llvm_profdata() -> Path | None:
     """Locate the rustup toolchain's llvm-profdata (llvm-tools component)."""
     try:
         sysroot = subprocess.run(
-            ["rustc", "--print", "sysroot"],
+            soldr_command("rustc", "--print", "sysroot"),
             capture_output=True,
             text=True,
             check=True,
@@ -618,7 +636,7 @@ def _ensure_nextest_installed() -> bool:
     where the developer hasn't done so yet.
     """
     probe = subprocess.run(
-        ["cargo", "nextest", "--version"],
+        cargo_command("nextest", "--version"),
         cwd=ROOT,
         capture_output=True,
         text=True,
@@ -626,7 +644,7 @@ def _ensure_nextest_installed() -> bool:
     if probe.returncode == 0:
         return True
     print(
-        "cargo-nextest not found — installing (`cargo install cargo-nextest --locked`)…",
+        "cargo-nextest not found — installing (`soldr cargo install cargo-nextest --locked`)…",
         flush=True,
     )
     install = subprocess.run(
@@ -636,7 +654,7 @@ def _ensure_nextest_installed() -> bool:
     if install.returncode != 0:
         print(
             "Failed to install cargo-nextest. Install it manually with:\n"
-            "  cargo install cargo-nextest --locked\n"
+            "  soldr cargo install cargo-nextest --locked\n"
             "or via the taiki-e/install-action GitHub Action.",
             file=sys.stderr,
             flush=True,
@@ -683,7 +701,7 @@ def parse_args(
     )
 
 
-def main(argv: list[str] | None = None) -> int:
+def _main(argv: list[str] | None, previous: dict[str, str | None]) -> int:
     (
         pytest_args,
         require_symbols,
@@ -704,10 +722,21 @@ def main(argv: list[str] | None = None) -> int:
     python = Path(sys.executable)
     coverage_env: dict[str, str] = {}
     if coverage:
-        # cargo-llvm-cov owns RUSTC_WRAPPER for the whole coverage pass, so
-        # every cargo invocation here runs cargo directly (ci/soldr.py).
-        os.environ[DIRECT_CARGO_ENV] = "1"
-        unusable = llvm_profdata_preflight()
+        # Share the profile target with the instrumented wheel build.
+        os.environ[COVERAGE_ENV] = "1"
+        profdata = _find_llvm_profdata()
+        if profdata is None:
+            print(
+                "coverage: llvm-profdata is unavailable in the Soldr toolchain",
+                file=sys.stderr,
+                flush=True,
+            )
+            return 1
+        previous.setdefault(
+            "RUNNING_PROCESS_LLVM_PROFDATA", os.environ.get("RUNNING_PROCESS_LLVM_PROFDATA")
+        )
+        os.environ["RUNNING_PROCESS_LLVM_PROFDATA"] = str(profdata)
+        unusable = llvm_profdata_preflight([str(profdata)])
         if unusable is not None:
             print(unusable, file=sys.stderr, flush=True)
             return 1
@@ -725,7 +754,14 @@ def main(argv: list[str] | None = None) -> int:
         except RuntimeError as exc:
             print(str(exc), file=sys.stderr, flush=True)
             return 1
+        for key in coverage_env:
+            previous.setdefault(key, os.environ.get(key))
         os.environ.update(coverage_env)
+        previous.setdefault("CARGO_TARGET_DIR", os.environ.get("CARGO_TARGET_DIR"))
+        os.environ["CARGO_TARGET_DIR"] = str(_rust_coverage_profile_dir(coverage_env))
+        # Soldr must retain cargo-llvm-cov's instrumenting wrapper instead of
+        # replacing it with its normal cache wrapper on each Cargo invocation.
+        os.environ["SOLDR_RUSTC_WRAPPER"] = coverage_env["RUSTC_WRAPPER"]
         # The external-test contract requires cleaning after the environment
         # is established and before any instrumented binary is built.
         if run(_rust_coverage_clean_command()) != 0:
@@ -764,6 +800,24 @@ def main(argv: list[str] | None = None) -> int:
     if not live_only:
         if not _ensure_nextest_installed():
             return 1
+        try:
+            _probe_tree_fixture()
+        except (OSError, RuntimeError) as exc:
+            print(str(exc), file=sys.stderr, flush=True)
+            return 1
+        if coverage or all_features:
+            try:
+                interposer = _interposer_build_command(sys.platform)
+            except RuntimeError as exc:
+                print(str(exc), file=sys.stderr, flush=True)
+                return 1
+            if run(interposer) != 0:
+                return 1
+            previous.setdefault(
+                "RUNNING_PROCESS_INTERPOSER_READY",
+                os.environ.get("RUNNING_PROCESS_INTERPOSER_READY"),
+            )
+            os.environ["RUNNING_PROCESS_INTERPOSER_READY"] = "1"
 
         if coverage:
             # Fail fast on a toolchain that cannot merge profiles at all.
@@ -781,7 +835,7 @@ def main(argv: list[str] | None = None) -> int:
                         "-p",
                         "testbins",
                         "--target-dir",
-                        "target",
+                        str(_rust_coverage_profile_dir(coverage_env)),
                     )
                 )
                 != 0
@@ -1004,6 +1058,21 @@ def main(argv: list[str] | None = None) -> int:
                 )
             return 1
     return 0
+
+
+def main(argv: list[str] | None = None) -> int:
+    # Coverage temporarily changes these policy inputs. Restore them even on
+    # an early return or exception when this entrypoint is called in-process.
+    keys = (COVERAGE_ENV, "SOLDR_RUSTC_WRAPPER")
+    previous = {key: os.environ.get(key) for key in keys}
+    try:
+        return _main(argv, previous)
+    finally:
+        for key, value in previous.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
 
 
 if __name__ == "__main__":

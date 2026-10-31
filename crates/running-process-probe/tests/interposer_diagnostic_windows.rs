@@ -29,61 +29,17 @@ fn target_profile_dir() -> PathBuf {
 }
 
 fn build_interposer_dll() -> PathBuf {
-    let status = cargo_command()
-        .args(["build", "-p", "running-process-probe-interposer-windows"])
-        .status()
-        .expect("cargo build");
-    assert!(status.success(), "cargo build failed: {status:?}");
-    let p = target_profile_dir().join("running_process_probe_interposer_windows.dll");
-    assert!(p.exists(), "interposer DLL missing at {p:?}");
-    p
-}
-
-/// The toolchain's own cargo, resolved through soldr when it is present.
-///
-/// Not `soldr cargo`: this test already runs under `soldr cargo nextest`, and
-/// soldr's strict re-entrancy guard refuses a nested `soldr -> cargo -> test
-/// -> soldr` chain as a probable hang (soldr#2547), failing every Windows
-/// all-features run. `interposer_integration_windows.rs` resolves cargo the
-/// same way and passes in that run.
-fn cargo_command() -> Command {
-    if let Ok(soldr) = which::which("soldr") {
-        if let Ok(output) = Command::new(soldr)
-            .args(["rustup", "which", "cargo"])
-            .output()
-        {
-            if output.status.success() {
-                let cargo = String::from_utf8_lossy(&output.stdout).trim().to_string();
-                if !cargo.is_empty() {
-                    return Command::new(cargo);
-                }
-            }
-        }
-    }
-    Command::new("cargo")
-}
-
-/// Minimal `which` for soldr lookup, avoiding the extra crate dep.
-mod which {
-    use std::path::PathBuf;
-    pub fn which(name: &str) -> Result<PathBuf, ()> {
-        let candidates: Vec<String> = if name.ends_with(".exe") {
-            vec![name.to_string()]
-        } else {
-            vec![name.to_string(), format!("{name}.exe")]
-        };
-        if let Some(path) = std::env::var_os("PATH") {
-            for entry in std::env::split_paths(&path) {
-                for cand in &candidates {
-                    let p = entry.join(cand);
-                    if p.is_file() {
-                        return Ok(p);
-                    }
-                }
-            }
-        }
-        Err(())
-    }
+    assert_eq!(
+        std::env::var("RUNNING_PROCESS_INTERPOSER_READY").as_deref(),
+        Ok("1"),
+        "interposer fixtures must be prepared by the all-features test entrypoint"
+    );
+    let path = target_profile_dir().join("running_process_probe_interposer_windows.dll");
+    assert!(
+        path.is_file(),
+        "interposer fixture missing at {path:?}; run the all-features test entrypoint"
+    );
+    path
 }
 
 #[test]

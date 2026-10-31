@@ -54,36 +54,24 @@ fn target_profile_dir() -> PathBuf {
         .to_path_buf()
 }
 
-/// Build the Linux interposer cdylib on demand. Returns the path
-/// to the resulting `.so` artifact.
+/// Locate the interposer built before the test suite.
 fn build_and_locate_interposer_so() -> PathBuf {
     if let Some(path) = std::env::var_os("RPO_TEST_INTERPOSER_SO") {
-        let so = PathBuf::from(path);
-        assert!(so.exists(), "RPO_TEST_INTERPOSER_SO does not exist: {so:?}");
-        return so;
+        let path = PathBuf::from(path);
+        assert!(path.is_file(), "interposer fixture missing at {path:?}");
+        return path;
     }
-
-    let status = Command::new("cargo")
-        .args([
-            "build",
-            "-p",
-            "running-process-probe-interposer-linux",
-            "--features",
-            "test-seams",
-        ])
-        .status()
-        .expect("spawn cargo to build interposer so");
-    assert!(
-        status.success(),
-        "cargo build of interposer .so failed: {status:?}"
+    assert_eq!(
+        std::env::var("RUNNING_PROCESS_INTERPOSER_READY").as_deref(),
+        Ok("1"),
+        "interposer fixtures must be prepared by the all-features test entrypoint"
     );
-
-    let so = target_profile_dir().join("librunning_process_probe_interposer_linux.so");
+    let path = target_profile_dir().join("librunning_process_probe_interposer_linux.so");
     assert!(
-        so.exists(),
-        "expected interposer .so at {so:?} after cargo build"
+        path.is_file(),
+        "interposer fixture missing at {path:?}; run the all-features test entrypoint"
     );
-    so
+    path
 }
 
 #[test]

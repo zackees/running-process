@@ -20,7 +20,7 @@
 #![cfg(all(feature = "embed-helper", target_os = "windows"))]
 
 use std::io::Read;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -39,110 +39,27 @@ fn target_profile_dir() -> PathBuf {
         .to_path_buf()
 }
 
-fn target_triple_for_profile_dir(profile_dir: &Path) -> Option<String> {
-    let triple_dir = profile_dir.parent()?;
-    let triple = triple_dir.file_name()?.to_str()?;
-    if triple.contains("-pc-windows-") {
-        Some(triple.to_string())
-    } else {
-        None
-    }
-}
-
-fn add_current_test_target_flags(cmd: &mut Command, profile_dir: &Path) {
-    if profile_dir
-        .file_name()
-        .and_then(|s| s.to_str())
-        .is_some_and(|s| s == "release")
-    {
-        cmd.arg("--release");
-    }
-    if let Some(triple) = target_triple_for_profile_dir(profile_dir) {
-        cmd.arg("--target").arg(triple);
-    }
-}
-
-fn cargo_command() -> Command {
-    if let Some(soldr) = which("soldr") {
-        if let Ok(output) = Command::new(soldr)
-            .args(["rustup", "which", "cargo"])
-            .output()
-        {
-            if output.status.success() {
-                let cargo = String::from_utf8_lossy(&output.stdout).trim().to_string();
-                if !cargo.is_empty() {
-                    return Command::new(cargo);
-                }
-            }
-        }
-    }
-    Command::new("cargo")
-}
-
-/// Build the Windows interposer DLL on demand. Returns its path.
-///
-/// Shells out to `cargo build -p running-process-probe-
-/// interposer-windows`. The first run rebuilds; subsequent runs
-/// are no-ops because cargo's incremental checks find no changes.
-/// Either way we end up with the DLL at
-/// `<target>/<profile>/running_process_probe_interposer_windows.dll`.
+/// Locate fixtures built before the all-features test suite.
 fn build_and_locate_interposer_dll() -> PathBuf {
-    let profile_dir = target_profile_dir();
-    let mut cmd = cargo_command();
-    cmd.args(["build", "-p", "running-process-probe-interposer-windows"]);
-    add_current_test_target_flags(&mut cmd, &profile_dir);
-    let status = cmd.status().expect("spawn cargo to build interposer dll");
-    assert!(
-        status.success(),
-        "cargo build of interposer DLL failed: {status:?}"
+    assert_eq!(
+        std::env::var("RUNNING_PROCESS_INTERPOSER_READY").as_deref(),
+        Ok("1"),
+        "interposer fixtures must be prepared by the all-features test entrypoint"
     );
-
-    let dll = profile_dir.join("running_process_probe_interposer_windows.dll");
+    let path = target_profile_dir().join("running_process_probe_interposer_windows.dll");
     assert!(
-        dll.exists(),
-        "expected interposer DLL at {dll:?} after cargo build"
+        path.is_file(),
+        "interposer fixture missing at {path:?}; run the all-features test entrypoint"
     );
-    dll
+    path
 }
 
 fn build_createfilew_probe() {
-    let profile_dir = target_profile_dir();
-    let mut cmd = cargo_command();
-    cmd.args([
-        "build",
-        "-p",
-        "testbins",
-        "--bin",
-        "testbin-createfilew-probe",
-    ]);
-    add_current_test_target_flags(&mut cmd, &profile_dir);
-    let status = cmd
-        .status()
-        .expect("spawn cargo to build testbin-createfilew-probe");
+    let path = target_profile_dir().join("testbin-createfilew-probe.exe");
     assert!(
-        status.success(),
-        "cargo build of testbin-createfilew-probe failed: {status:?}"
+        path.is_file(),
+        "probe fixture missing at {path:?}; run the all-features test entrypoint"
     );
-}
-
-/// Lightweight `which` replacement for Windows. Returns the first
-/// matching path in `PATH` if `name` (or `name.exe`) resolves.
-fn which(name: &str) -> Option<PathBuf> {
-    let candidates: Vec<String> = if name.ends_with(".exe") {
-        vec![name.to_string()]
-    } else {
-        vec![name.to_string(), format!("{name}.exe")]
-    };
-    let path = std::env::var_os("PATH")?;
-    for entry in std::env::split_paths(&path) {
-        for cand in &candidates {
-            let p = entry.join(cand);
-            if p.is_file() {
-                return Some(p);
-            }
-        }
-    }
-    None
 }
 
 // Slice 7c (resolved): the slice 6b detour fires correctly on
@@ -173,7 +90,7 @@ fn interposer_dll_fires_rpp_hook_after_inject() {
         fixture.exists(),
         "testbin-createfilew-probe not built — \
          run `cargo build -p testbins --bin testbin-createfilew-probe` \
-         (or rely on a workspace-wide `cargo build` having done so). \
+         (or rely on a workspace-wide `soldr cargo build` having done so). \
          expected at {fixture:?}"
     );
 

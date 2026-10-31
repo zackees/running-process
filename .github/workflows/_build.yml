@@ -157,7 +157,7 @@ jobs:
 
       - name: Build sdist
         if: ${{ inputs.include-sdist }}
-        run: uv run --no-sync maturin sdist --out dist
+        run: soldr maturin sdist --out dist
 
       - name: Upload dist artifacts
         if: ${{ inputs.artifact-name != '' }}
@@ -210,9 +210,13 @@ jobs:
           echo "::group::Rust toolchain diagnostics"
           command -v rustup >/dev/null 2>&1 && rustup show || true
           command -v rustup >/dev/null 2>&1 && rustup toolchain list || true
-          command -v rustc >/dev/null 2>&1 && rustc -Vv || true
-          command -v cargo >/dev/null 2>&1 && cargo -V || true
-          command -v cargo-clippy >/dev/null 2>&1 && cargo-clippy -V || true
+          if command -v soldr >/dev/null 2>&1; then
+            soldr rustc -Vv || true
+            soldr cargo -V || true
+            soldr cargo clippy --version || true
+          else
+            echo "::warning::Soldr is unavailable; Rust tool version diagnostics could not run."
+          fi
           echo "::endgroup::"
 
       - name: Upload failure logs

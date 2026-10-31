@@ -9,6 +9,8 @@ import pytest
 
 from ci import test as ci_test
 
+_REAL_PROBE_TREE_FIXTURE = ci_test._probe_tree_fixture
+
 
 @pytest.fixture(autouse=True)
 def _isolate_ci_env(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -21,6 +23,7 @@ def _isolate_ci_env(monkeypatch: pytest.MonkeyPatch) -> None:
     """
     monkeypatch.delenv("RUNNING_PROCESS_TEST_NOCAPTURE", raising=False)
     monkeypatch.setattr(ci_test, "_ensure_nextest_installed", lambda: True)
+    monkeypatch.setattr(ci_test, "_probe_tree_fixture", lambda: "running-process-probe v1 :: ")
 
 
 def _expected_build_testbins_cmd() -> list[str]:
@@ -815,6 +818,7 @@ def test_main_aborts_coverage_before_running_tests_when_profdata_faults(
     """
     commands: list[list[str]] = []
 
+    monkeypatch.setattr(ci_test, "_find_llvm_profdata", lambda: Path("/tmp/llvm-profdata"))
     monkeypatch.delenv(ci_test.GITHUB_ACTIONS_ENV, raising=False)
     monkeypatch.delenv(ci_test.IN_RUNNING_PROCESS_ENV, raising=False)
     monkeypatch.delenv("RUNNING_PROCESS_LIVE_TESTS", raising=False)
@@ -844,6 +848,11 @@ def test_main_runs_coverage_when_the_preflight_passes(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Guard against the preflight blocking a healthy toolchain."""
+    monkeypatch.setattr(ci_test, "_find_llvm_profdata", lambda: Path("/tmp/llvm-profdata"))
+    monkeypatch.setenv("SOLDR_RUSTC_WRAPPER", "previous-wrapper")
+    monkeypatch.setenv("RUSTC_WRAPPER", "previous-rustc-wrapper")
+    monkeypatch.setenv("CARGO_TARGET_DIR", "/previous/target")
+    monkeypatch.setenv("RUNNING_PROCESS_LLVM_PROFDATA", "/previous/profdata")
     commands: list[list[str]] = []
 
     monkeypatch.delenv(ci_test.GITHUB_ACTIONS_ENV, raising=False)
@@ -866,15 +875,24 @@ def test_main_runs_coverage_when_the_preflight_passes(
             "CARGO_LLVM_COV_TARGET_DIR": "/tmp/target",
         },
     )
-    monkeypatch.setattr(
-        ci_test,
-        "run",
-        lambda cmd, extra_env=None: commands.append(list(cmd)) or 0,
-    )
+    wrappers: list[str | None] = []
+    targets: list[str | None] = []
+    def capture(cmd, extra_env=None):
+        commands.append(list(cmd))
+        wrappers.append(os.environ.get("SOLDR_RUSTC_WRAPPER"))
+        targets.append(os.environ.get("CARGO_TARGET_DIR"))
+        return 0
+    monkeypatch.setattr(ci_test, "run", capture)
 
     result = ci_test.main(["--coverage"])
 
     assert result == 0
+    assert "/tmp/bin/coverage-wrapper" in wrappers
+    assert os.environ["SOLDR_RUSTC_WRAPPER"] == "previous-wrapper"
+    assert os.environ["RUSTC_WRAPPER"] == "previous-rustc-wrapper"
+    assert "/tmp/target" in targets
+    assert os.environ["CARGO_TARGET_DIR"] == "/previous/target"
+    assert os.environ["RUNNING_PROCESS_LLVM_PROFDATA"] == "/previous/profdata"
     assert any("llvm-cov" in " ".join(cmd) for cmd in commands), (
         f"coverage should have run; issued {commands}"
     )
@@ -940,3 +958,73 @@ def test_flags_do_not_leak_into_pytest_arguments() -> None:
     assert "--all-features" not in pytest_args
     assert "--rust-only" not in pytest_args
     assert pytest_args[-2:] == ["-k", "broker"]
+
+
+def test_main_restores_coverage_policy_on_exception(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("SOLDR_RUSTC_WRAPPER", "before")
+    monkeypatch.delenv(ci_test.COVERAGE_ENV, raising=False)
+
+    def fail(_argv, _previous):
+        os.environ["SOLDR_RUSTC_WRAPPER"] = "during"
+        os.environ[ci_test.COVERAGE_ENV] = "1"
+        raise RuntimeError("failed")
+
+    monkeypatch.setattr(ci_test, "_main", fail)
+    with pytest.raises(RuntimeError, match="failed"):
+        ci_test.main(["--coverage"])
+    assert os.environ["SOLDR_RUSTC_WRAPPER"] == "before"
+    assert ci_test.COVERAGE_ENV not in os.environ
+
+
+def test_llvm_sysroot_probe_uses_soldr(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    calls = []
+    monkeypatch.setattr(ci_test, "soldr_command", lambda *args: ["soldr", *args])
+    def run(command, **_kwargs):
+        calls.append(command)
+        return ci_test.subprocess.CompletedProcess(command, 0, str(tmp_path), "")
+    monkeypatch.setattr(ci_test.subprocess, "run", run)
+    assert ci_test._find_llvm_profdata() is None
+    assert calls == [["soldr", "rustc", "--print", "sysroot"]]
+
+
+def test_probe_tree_fixture_keeps_relevant_dependency_evidence(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    output = "root package\n├── running-process-probe v1 :: \n└── other\n"
+    monkeypatch.setattr(ci_test, "cargo_command", lambda *args: ["soldr", "cargo", *args])
+    monkeypatch.setattr(
+        ci_test.subprocess,
+        "run",
+        lambda command, **_kwargs: ci_test.subprocess.CompletedProcess(command, 0, output, ""),
+    )
+    result = _REAL_PROBE_TREE_FIXTURE()
+    assert "running-process-probe v1" in result
+    assert "other" not in result
+
+
+@pytest.mark.parametrize(
+    ("platform_name", "package", "has_seams"),
+    [
+        ("linux", "running-process-probe-interposer-linux", True),
+        ("darwin", "running-process-probe-interposer-macos", True),
+        ("win32", "running-process-probe-interposer-windows", False),
+    ],
+)
+def test_interposer_fixture_build_matches_native_platform(
+    monkeypatch: pytest.MonkeyPatch, platform_name: str, package: str, has_seams: bool,
+) -> None:
+    monkeypatch.setattr(ci_test, "cargo_command", lambda *args: ["soldr", "cargo", *args])
+    command = ci_test._interposer_build_command(platform_name)
+    assert command[:4] == ["soldr", "cargo", "build", "-p"]
+    assert command[4] == package
+    assert ("test-seams" in command) is has_seams
+
+
+def test_probe_tree_fixture_rejects_failed_command(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(ci_test, "cargo_command", lambda *args: ["soldr", "cargo", *args])
+    monkeypatch.setattr(
+        ci_test.subprocess, "run",
+        lambda command, **_kwargs: ci_test.subprocess.CompletedProcess(command, 1, "", "bad tree"),
+    )
+    with pytest.raises(RuntimeError, match="bad tree"):
+        _REAL_PROBE_TREE_FIXTURE()

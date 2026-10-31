@@ -15,7 +15,7 @@ import zipfile
 from pathlib import Path
 from typing import Literal
 
-from ci.soldr import DIRECT_CARGO_ENV, cargo_command
+from ci.soldr import COVERAGE_ENV, cargo_command, maturin_command
 
 ROOT = Path(__file__).resolve().parent.parent
 DIST = ROOT / "dist"
@@ -27,19 +27,14 @@ BuildMode = Literal["dev", "release"]
 def maturin_target_dir(env: dict[str, str]) -> Path:
     """Target tree maturin's Cargo builds the extension into.
 
-    soldr/zccache materializes cache hits as read-only artifacts in the tree
-    `soldr cargo` builds into (`target/`). Maturin runs Cargo itself, and where
-    that Cargo is not routed back through soldr (Windows runners resolve the
-    toolchain's cargo.exe directly) it fails to overwrite those read-only
-    outputs ("output file ... is not writeable"). Maturin therefore owns a
-    separate tree, like the standalone trampoline does.
+    Soldr's cached artifacts can be read-only, so wheel builds use their own
+    target tree to avoid overwriting artifacts from other build lanes.
 
-    The coverage pass is the exception: it runs Cargo directly under
-    cargo-llvm-cov, which reads the instrumented extension from the shared
-    `target/` tree when it merges the report.
+    The coverage pass uses the shared `target/` tree so cargo-llvm-cov
+    can find the instrumented extension when it merges the report.
     """
-    if env.get(DIRECT_CARGO_ENV) == "1":
-        return ROOT / "target"
+    if env.get(COVERAGE_ENV) == "1":
+        return Path(env.get("CARGO_LLVM_COV_TARGET_DIR", str(ROOT / "target")))
     return ROOT / "target" / "maturin"
 
 
@@ -58,16 +53,13 @@ def preserve_dev_pdb(target_dir: Path) -> Path:
 
 
 def build_command(mode: BuildMode, *, rustc_args: list[str] | None = None) -> list[str]:
-    cmd = [
-        sys.executable,
-        "-m",
-        "maturin",
+    cmd = maturin_command(
         "build",
         "--interpreter",
         sys.executable,
         "--out",
         str(DIST),
-    ]
+    )
     if mode == "dev":
         cmd.extend(["--profile", "dev"])
     else:
@@ -160,9 +152,8 @@ def build_trampoline(mode: BuildMode, *, env: dict[str, str] | None = None) -> i
 
     profile_args = ["--release"] if mode == "release" else []
     trampoline_env = dict(env) if env is not None else os.environ.copy()
-    # soldr/zccache materializes cache hits as read-only artifacts. Maturin
-    # subsequently invokes Cargo directly and must not try to overwrite those
-    # files, so the standalone trampoline owns a separate target subtree.
+    # Keep the standalone trampoline separate from the wheel target tree.
+    # Cached artifacts from either build can be read-only.
     trampoline_env["CARGO_TARGET_DIR"] = str(ROOT / "target" / "trampoline")
     # Wave 7 of #165: daemon-trampoline is now a [[bin]] inside the
     # `running-process` crate; select it by binary name rather than

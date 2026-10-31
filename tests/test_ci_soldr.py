@@ -3,67 +3,42 @@ from __future__ import annotations
 from ci import soldr
 
 
-def test_cargo_command_falls_back_to_raw_cargo_when_soldr_absent(monkeypatch) -> None:
-    """When `soldr` is not on PATH, `cargo_command` returns the raw cargo argv.
-    This is the path a local checkout without soldr takes; CI runners get
-    soldr from zackees/setup-soldr and take the soldr branch."""
-    monkeypatch.setattr("shutil.which", lambda _name: None)
-    assert soldr.cargo_command("test", "--workspace") == [
-        "cargo",
-        "test",
-        "--workspace",
-    ]
-
-
-def test_cargo_command_routes_through_soldr_when_available(monkeypatch) -> None:
-    """When `soldr` is on PATH (typical local dev setup), `cargo_command`
-    prefixes the argv with `soldr` so the rustup-managed toolchain is
-    resolved instead of whatever stale `cargo` PATH-discovers first."""
-    monkeypatch.setattr(
-        "shutil.which",
-        lambda name: "/usr/local/bin/soldr" if name == "soldr" else None,
-    )
-    # The coverage lane exports the opt-out to this very test process.
-    monkeypatch.delenv(soldr.DIRECT_CARGO_ENV, raising=False)
-    assert soldr.cargo_command("test", "--workspace") == [
-        "soldr",
-        "cargo",
-        "test",
-        "--workspace",
-    ]
-
-
-def test_cargo_command_passes_through_any_subcommand(monkeypatch) -> None:
-    """Regardless of the subcommand, `cargo_command` only changes the prefix."""
-    monkeypatch.setattr("shutil.which", lambda _name: None)
+def test_cargo_command_routes_all_subcommands_through_soldr(monkeypatch) -> None:
+    monkeypatch.setattr("shutil.which", lambda name: "/usr/local/bin/soldr")
     for subcommand in ("clippy", "fmt", "llvm-cov", "build", "check", "package"):
         assert soldr.cargo_command(subcommand, "--workspace") == [
-            "cargo",
-            subcommand,
-            "--workspace",
+            "soldr", "cargo", subcommand, "--workspace"
         ]
 
 
-def test_maturin_command_uses_python_module() -> None:
-    assert soldr.maturin_command("/tmp/python", "build", "--release") == [
-        "/tmp/python",
-        "-m",
-        "maturin",
-        "build",
-        "--release",
+def test_maturin_command_routes_through_soldr(monkeypatch) -> None:
+    monkeypatch.setattr("shutil.which", lambda name: "/usr/local/bin/soldr")
+    assert soldr.maturin_command("build", "--release") == [
+        "soldr", "maturin", "build", "--release"
     ]
 
 
-def test_cargo_command_runs_cargo_directly_when_opted_out(monkeypatch) -> None:
-    """Coverage opts out: cargo-llvm-cov must own RUSTC_WRAPPER, so its builds
-    cannot go through `soldr cargo` even with soldr installed."""
-    monkeypatch.setattr(
-        "shutil.which",
-        lambda name: "/usr/local/bin/soldr" if name == "soldr" else None,
-    )
-    monkeypatch.setenv(soldr.DIRECT_CARGO_ENV, "1")
+def test_coverage_cannot_bypass_soldr(monkeypatch) -> None:
+    monkeypatch.setattr("shutil.which", lambda name: "/usr/local/bin/soldr")
+    monkeypatch.setenv("RUNNING_PROCESS_DIRECT_CARGO", "1")
     assert soldr.cargo_command("llvm-cov", "show-env") == [
-        "cargo",
-        "llvm-cov",
-        "show-env",
+        "soldr", "cargo", "llvm-cov", "show-env"
     ]
+
+
+def test_soldr_uses_uvx_when_not_on_path(monkeypatch) -> None:
+    monkeypatch.setattr("shutil.which", lambda name: None)
+    assert soldr.cargo_command("test") == ["uvx", "soldr", "cargo", "test"]
+    assert soldr.maturin_command("build") == ["uvx", "soldr", "maturin", "build"]
+
+
+def test_nextest_probe_uses_soldr(monkeypatch) -> None:
+    from ci import test as ci_test
+    calls = []
+    monkeypatch.setattr(ci_test, "cargo_command", lambda *args: ["soldr", "cargo", *args])
+    def run(command, **_kwargs):
+        calls.append(command)
+        return ci_test.subprocess.CompletedProcess(command, 0, "", "")
+    monkeypatch.setattr(ci_test.subprocess, "run", run)
+    assert ci_test._ensure_nextest_installed()
+    assert calls == [["soldr", "cargo", "nextest", "--version"]]
