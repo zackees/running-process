@@ -53,7 +53,7 @@ miniz_oxide = { version = "0.8", optional = true }
 prost = { version = "0.14", optional = true }
 running-process-protocol = { version = "=4.10.20", path = "../running-process-protocol", optional = true }
 tokio = { version = "1", default-features = false, features = ["io-util", "macros", "process", "rt"], optional = true }
-sysinfo = { version = "0.30", optional = true }
+sysinfo = { version = "0.39", optional = true }
 interprocess = { version = "2", optional = true }
 thiserror = "2"
 serde = { version = "1", features = ["derive"], optional = true }

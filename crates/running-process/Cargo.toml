@@ -252,7 +252,7 @@ test-support = ["client"]
 
 [dependencies]
 libc = "0.2"
-sysinfo = { version = "0.30", optional = true }
+sysinfo = { version = "0.39", optional = true }
 thiserror = "2"
 winapi = { version = "0.3", features = ["errhandlingapi", "fileapi", "handleapi", "ioapiset", "jobapi2", "namedpipeapi", "processthreadsapi", "winnt", "minwindef", "windef", "winuser", "consoleapi", "processenv", "synchapi", "winbase", "wincon", "tlhelp32", "securitybaseapi", "winerror", "sysinfoapi"] }
 # Wave 4 of #165: client-feature deps. All optional so the always-on
@@ -298,7 +298,7 @@ futures-util = { version = "0.3", features = ["sink"], optional = true }
 tracing = { version = "0.1", optional = true }
 tracing-subscriber = { version = "0.3", features = ["env-filter"], optional = true }
 rusqlite = { version = "0.32", features = ["bundled"], optional = true }
-toml = { version = "0.8", optional = true }
+toml = { version = "1", optional = true }
 # Product serialization is opt-in. `client` owns runpm config, cleanup, and
 # broker-admin JSON; `terminal-graphics` owns its derives; and
 # `daemon-trampoline` owns its sidecar parser.

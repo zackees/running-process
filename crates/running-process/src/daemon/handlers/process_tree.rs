@@ -31,7 +31,11 @@ pub fn handle_get_process_tree(request: &DaemonRequest, _state: &DaemonState) ->
 /// Build a human-readable process tree string rooted at `root_pid` using sysinfo.
 fn build_process_tree_display(root_pid: u32) -> String {
     let mut sys = System::new();
-    sys.refresh_processes();
+    sys.refresh_processes_specifics(
+        sysinfo::ProcessesToUpdate::All,
+        true,
+        sysinfo::ProcessRefreshKind::everything(),
+    );
 
     let sysinfo_pid = Pid::from_u32(root_pid);
     let Some(root_proc) = sys.process(sysinfo_pid) else {
@@ -41,11 +45,11 @@ fn build_process_tree_display(root_pid: u32) -> String {
     let mut lines = Vec::new();
     lines.push(format!(
         "{} (pid={root_pid}) {}",
-        root_proc.name(),
+        root_proc.name().to_string_lossy(),
         root_proc
             .cmd()
             .iter()
-            .map(|s| s.to_string())
+            .map(|s| s.to_string_lossy())
             .collect::<Vec<_>>()
             .join(" ")
     ));
@@ -65,7 +69,7 @@ fn build_process_tree_display(root_pid: u32) -> String {
 
             lines.push(format!(
                 "{prefix}{connector}{} (pid={})",
-                child.name(),
+                child.name().to_string_lossy(),
                 child.pid().as_u32()
             ));
 

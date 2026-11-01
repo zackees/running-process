@@ -71,7 +71,11 @@ pub fn build_register_request(config: &Config) -> io::Result<RegisterProcess> {
 
     let pid = Pid::from_u32(std::process::id());
     let mut system = System::new();
-    system.refresh_pids_specifics(&[pid], ProcessRefreshKind::new());
+    system.refresh_processes_specifics(
+        sysinfo::ProcessesToUpdate::Some(&[pid]),
+        true,
+        ProcessRefreshKind::nothing(),
+    );
     let started_at_unix_ms = system
         .process(pid)
         .map(|process| process.start_time().saturating_mul(1000))
@@ -320,7 +324,11 @@ mod tests {
         assert_eq!(key.pid, u64::from(std::process::id()));
         let pid = Pid::from_u32(std::process::id());
         let mut system = System::new();
-        system.refresh_pids_specifics(&[pid], ProcessRefreshKind::new());
+        system.refresh_processes_specifics(
+            sysinfo::ProcessesToUpdate::Some(&[pid]),
+            true,
+            ProcessRefreshKind::nothing(),
+        );
         assert_eq!(
             key.start_time,
             system

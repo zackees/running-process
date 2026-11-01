@@ -882,13 +882,21 @@ fn sample_peak_rss(keep_sampling: Arc<AtomicBool>, pid: u32) -> u64 {
     let mut system = System::new();
     let mut peak = 0;
     while keep_sampling.load(Ordering::Relaxed) {
-        system.refresh_process(pid);
+        system.refresh_processes_specifics(
+            sysinfo::ProcessesToUpdate::Some(&[pid]),
+            true,
+            sysinfo::ProcessRefreshKind::everything(),
+        );
         if let Some(process) = system.process(pid) {
             peak = peak.max(process.memory());
         }
         std::thread::sleep(Duration::from_millis(5));
     }
-    system.refresh_process(pid);
+    system.refresh_processes_specifics(
+        sysinfo::ProcessesToUpdate::Some(&[pid]),
+        true,
+        sysinfo::ProcessRefreshKind::everything(),
+    );
     if let Some(process) = system.process(pid) {
         peak = peak.max(process.memory());
     }

@@ -75,7 +75,11 @@ pub(crate) fn unregister_active_process(pid: u32) {
 pub(crate) fn process_created_at(pid: u32) -> Option<f64> {
     let pid = system_pid(pid);
     let mut system = System::new();
-    system.refresh_process_specifics(pid, ProcessRefreshKind::new());
+    system.refresh_processes_specifics(
+        sysinfo::ProcessesToUpdate::Some(&[pid]),
+        true,
+        ProcessRefreshKind::nothing(),
+    );
     system
         .process(pid)
         .map(|process| process.start_time() as f64)

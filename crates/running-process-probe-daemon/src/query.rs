@@ -490,7 +490,9 @@ impl OsTableProvider for SysinfoProvider {
     fn enumerate(&self) -> Vec<OsProcess> {
         let mut system = System::new();
         system.refresh_processes_specifics(
-            ProcessRefreshKind::new()
+            sysinfo::ProcessesToUpdate::All,
+            true,
+            ProcessRefreshKind::nothing()
                 .with_exe(UpdateKind::Always)
                 .with_cwd(UpdateKind::Always),
         );
@@ -500,7 +502,7 @@ impl OsTableProvider for SysinfoProvider {
             .map(|(pid, process)| OsProcess {
                 pid: pid.as_u32(),
                 started_at_unix_ms: process.start_time().saturating_mul(1000),
-                name: process.name().to_owned(),
+                name: process.name().to_string_lossy().into_owned(),
                 exe: process.exe().map(PathBuf::from),
                 cwd: process.cwd().map(PathBuf::from),
             })

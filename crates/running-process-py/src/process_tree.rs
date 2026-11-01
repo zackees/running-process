@@ -18,7 +18,11 @@ pub(crate) fn kill_process_tree_impl(pid: u32, timeout_seconds: f64) {
 /// already-exited root PID, which is the desired idempotent cleanup result.
 pub(crate) fn terminate_process_tree_impl(pid: u32, timeout_seconds: f64) -> bool {
     let mut system = System::new();
-    system.refresh_processes();
+    system.refresh_processes_specifics(
+        sysinfo::ProcessesToUpdate::All,
+        true,
+        sysinfo::ProcessRefreshKind::everything(),
+    );
     let pid = system_pid(pid);
     let Some(_) = system.process(pid) else {
         return true;
@@ -40,7 +44,11 @@ pub(crate) fn terminate_process_tree_impl(pid: u32, timeout_seconds: f64) -> boo
         .checked_add(Duration::from_secs_f64(timeout_seconds.max(0.0)))
         .unwrap_or_else(Instant::now);
     loop {
-        system.refresh_processes();
+        system.refresh_processes_specifics(
+            sysinfo::ProcessesToUpdate::All,
+            true,
+            sysinfo::ProcessRefreshKind::everything(),
+        );
         if kill_order
             .iter()
             .all(|target| system.process(*target).is_none())
@@ -57,14 +65,22 @@ pub(crate) fn terminate_process_tree_impl(pid: u32, timeout_seconds: f64) -> boo
 #[pyfunction]
 pub(crate) fn native_get_process_tree_info(pid: u32) -> String {
     let mut system = System::new();
-    system.refresh_processes();
+    system.refresh_processes_specifics(
+        sysinfo::ProcessesToUpdate::All,
+        true,
+        sysinfo::ProcessRefreshKind::everything(),
+    );
     let pid = system_pid(pid);
     let Some(process) = system.process(pid) else {
         return format!("Could not get process info for PID {}", pid.as_u32());
     };
 
     let mut info = vec![
-        format!("Process {} ({})", pid.as_u32(), process.name()),
+        format!(
+            "Process {} ({})",
+            pid.as_u32(),
+            process.name().to_string_lossy()
+        ),
         format!("Status: {:?}", process.status()),
     ];
     let children = descendant_pids(&system, pid);
@@ -72,7 +88,11 @@ pub(crate) fn native_get_process_tree_info(pid: u32) -> String {
         info.push("Child processes:".to_string());
         for child_pid in children {
             if let Some(child) = system.process(child_pid) {
-                info.push(format!("  Child {} ({})", child_pid.as_u32(), child.name()));
+                info.push(format!(
+                    "  Child {} ({})",
+                    child_pid.as_u32(),
+                    child.name().to_string_lossy()
+                ));
             }
         }
     }

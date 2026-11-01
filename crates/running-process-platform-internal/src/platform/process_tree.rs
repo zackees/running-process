@@ -28,13 +28,13 @@ impl ProcessInstance {
 
 pub(crate) fn kill_tree(pid: u32, timeout: Duration, start_key: ProcessStartKey) -> io::Result<u32> {
     let mut system = System::new();
-    system.refresh_processes();
+    system.refresh_processes_specifics(sysinfo::ProcessesToUpdate::All, true, sysinfo::ProcessRefreshKind::everything());
     let root_pid = Pid::from_u32(pid);
     let Some(root_process) = system.process(root_pid) else { return Ok(0); };
     let root = match ProcessInstance::from_process(root_pid, root_process, start_key) {
         Ok(root) => root,
         Err(error) => {
-            system.refresh_processes();
+            system.refresh_processes_specifics(sysinfo::ProcessesToUpdate::All, true, sysinfo::ProcessRefreshKind::everything());
             if system.process(root_pid).is_none() { return Ok(0); }
             return Err(error);
         }
@@ -51,7 +51,7 @@ pub(crate) fn kill_tree(pid: u32, timeout: Duration, start_key: ProcessStartKey)
     signal_matching(&system, &targets, &mut signaled, start_key);
     let started = Instant::now();
     loop {
-        system.refresh_processes();
+        system.refresh_processes_specifics(sysinfo::ProcessesToUpdate::All, true, sysinfo::ProcessRefreshKind::everything());
         let remaining: Vec<_> = targets.iter().copied()
             .filter(|target| target.still_matches(&system, start_key)).collect();
         if remaining.is_empty() || started.elapsed() >= timeout { break; }

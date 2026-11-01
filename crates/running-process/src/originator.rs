@@ -85,7 +85,9 @@ pub fn find_processes_by_originator(tool: &str) -> Vec<OriginatorProcessInfo> {
     let mut system = System::new();
 
     system.refresh_processes_specifics(
-        ProcessRefreshKind::new()
+        sysinfo::ProcessesToUpdate::All,
+        true,
+        ProcessRefreshKind::nothing()
             .with_environ(UpdateKind::Always)
             .with_cmd(UpdateKind::Always),
     );
@@ -95,7 +97,7 @@ pub fn find_processes_by_originator(tool: &str) -> Vec<OriginatorProcessInfo> {
     for (pid, process) in system.processes() {
         let environ = process.environ();
         let originator_value = environ.iter().find_map(|env_entry| {
-            if let Some(val) = env_entry.strip_prefix(ORIGINATOR_ENV_VAR) {
+            if let Some(val) = env_entry.to_string_lossy().strip_prefix(ORIGINATOR_ENV_VAR) {
                 if let Some(val) = val.strip_prefix('=') {
                     return Some(val.to_string());
                 }
@@ -120,14 +122,18 @@ pub fn find_processes_by_originator(tool: &str) -> Vec<OriginatorProcessInfo> {
 
         let cmd_parts = process.cmd();
         let command = if cmd_parts.is_empty() {
-            process.name().to_string()
+            process.name().to_string_lossy().into_owned()
         } else {
-            cmd_parts.join(" ")
+            cmd_parts
+                .iter()
+                .map(|part| part.to_string_lossy())
+                .collect::<Vec<_>>()
+                .join(" ")
         };
 
         results.push(OriginatorProcessInfo {
             pid: pid.as_u32(),
-            name: process.name().to_string(),
+            name: process.name().to_string_lossy().into_owned(),
             command,
             originator: originator_value,
             parent_pid,
@@ -164,17 +170,23 @@ pub fn find_processes_by_originator(tool: &str) -> Vec<OriginatorProcessInfo> {
 /// ```
 pub fn find_declared_daemon_pids() -> std::collections::HashSet<u32> {
     let mut system = System::new();
-    system.refresh_processes_specifics(ProcessRefreshKind::new().with_environ(UpdateKind::Always));
+    system.refresh_processes_specifics(
+        sysinfo::ProcessesToUpdate::All,
+        true,
+        ProcessRefreshKind::nothing().with_environ(UpdateKind::Always),
+    );
 
     let prefix = format!("{}=", crate::DAEMON_MARKER_ENV_VAR);
     system
         .processes()
         .iter()
         .filter_map(|(pid, process)| {
-            let declared = process
-                .environ()
-                .iter()
-                .any(|entry| entry.strip_prefix(&prefix).is_some_and(is_truthy_marker));
+            let declared = process.environ().iter().any(|entry| {
+                entry
+                    .to_string_lossy()
+                    .strip_prefix(&prefix)
+                    .is_some_and(is_truthy_marker)
+            });
             declared.then(|| pid.as_u32())
         })
         .collect()
@@ -313,7 +325,11 @@ mod tests {
     #[test]
     fn is_parent_alive_returns_true_for_current_process() {
         let mut system = System::new();
-        system.refresh_processes_specifics(ProcessRefreshKind::new().with_cmd(UpdateKind::Always));
+        system.refresh_processes_specifics(
+            sysinfo::ProcessesToUpdate::All,
+            true,
+            ProcessRefreshKind::nothing().with_cmd(UpdateKind::Always),
+        );
         let my_pid = std::process::id();
         // Use a far-future child start time so the parent clearly started before it
         let result = is_parent_alive(&system, my_pid, u64::MAX);
@@ -323,7 +339,11 @@ mod tests {
     #[test]
     fn is_parent_alive_returns_false_for_nonexistent_pid() {
         let mut system = System::new();
-        system.refresh_processes_specifics(ProcessRefreshKind::new().with_cmd(UpdateKind::Always));
+        system.refresh_processes_specifics(
+            sysinfo::ProcessesToUpdate::All,
+            true,
+            ProcessRefreshKind::nothing().with_cmd(UpdateKind::Always),
+        );
         // PID 0 is the idle process on Windows / swapper on Linux — use a very
         // unlikely high PID instead.
         let result = is_parent_alive(&system, u32::MAX, 0);
@@ -333,7 +353,11 @@ mod tests {
     #[test]
     fn is_parent_alive_detects_pid_reuse() {
         let mut system = System::new();
-        system.refresh_processes_specifics(ProcessRefreshKind::new().with_cmd(UpdateKind::Always));
+        system.refresh_processes_specifics(
+            sysinfo::ProcessesToUpdate::All,
+            true,
+            ProcessRefreshKind::nothing().with_cmd(UpdateKind::Always),
+        );
         let my_pid = std::process::id();
         // Pretend the child started at time 0 (long before the current process).
         // The current process's start_time should be > 0, so this should detect

@@ -89,11 +89,19 @@ pub fn scan_for_zombies(state: &DaemonState) -> Vec<ZombieInfo> {
     // Refresh only the PIDs we care about.
     for entry in &entries {
         let sysinfo_pid = Pid::from_u32(entry.pid);
-        system.refresh_process_specifics(sysinfo_pid, ProcessRefreshKind::new());
+        system.refresh_processes_specifics(
+            sysinfo::ProcessesToUpdate::Some(&[sysinfo_pid]),
+            true,
+            ProcessRefreshKind::nothing(),
+        );
         // Also refresh parent if known, so we can check parent liveness.
         if let Some(proc) = system.process(sysinfo_pid) {
             if let Some(parent_pid) = proc.parent() {
-                system.refresh_process_specifics(parent_pid, ProcessRefreshKind::new());
+                system.refresh_processes_specifics(
+                    sysinfo::ProcessesToUpdate::Some(&[parent_pid]),
+                    true,
+                    ProcessRefreshKind::nothing(),
+                );
             }
         }
     }
@@ -149,7 +157,11 @@ pub fn kill_zombies(state: &DaemonState, zombies: &[ZombieInfo]) -> Vec<(u32, bo
 
     for z in zombies {
         let sysinfo_pid = Pid::from_u32(z.pid);
-        system.refresh_process_specifics(sysinfo_pid, ProcessRefreshKind::new());
+        system.refresh_processes_specifics(
+            sysinfo::ProcessesToUpdate::Some(&[sysinfo_pid]),
+            true,
+            ProcessRefreshKind::nothing(),
+        );
 
         let killed = match system.process(sysinfo_pid) {
             Some(proc) => {
@@ -185,7 +197,11 @@ pub fn kill_conhosts(conhosts: &[ZombieInfo]) -> Vec<(u32, bool)> {
 
     for z in conhosts {
         let sysinfo_pid = Pid::from_u32(z.pid);
-        system.refresh_process_specifics(sysinfo_pid, ProcessRefreshKind::new());
+        system.refresh_processes_specifics(
+            sysinfo::ProcessesToUpdate::Some(&[sysinfo_pid]),
+            true,
+            ProcessRefreshKind::nothing(),
+        );
 
         let killed = match system.process(sysinfo_pid) {
             Some(proc) => {
@@ -365,7 +381,11 @@ mod tests {
         let pid = std::process::id();
         let mut system = System::new();
         let sysinfo_pid = Pid::from_u32(pid);
-        system.refresh_process_specifics(sysinfo_pid, ProcessRefreshKind::new());
+        system.refresh_processes_specifics(
+            sysinfo::ProcessesToUpdate::Some(&[sysinfo_pid]),
+            true,
+            ProcessRefreshKind::nothing(),
+        );
 
         let proc_start_ms = system
             .process(sysinfo_pid)
@@ -375,7 +395,11 @@ mod tests {
         // Also refresh the parent so orphan check works.
         if let Some(proc) = system.process(sysinfo_pid) {
             if let Some(parent_pid) = proc.parent() {
-                system.refresh_process_specifics(parent_pid, ProcessRefreshKind::new());
+                system.refresh_processes_specifics(
+                    sysinfo::ProcessesToUpdate::Some(&[parent_pid]),
+                    true,
+                    ProcessRefreshKind::nothing(),
+                );
             }
         }
 
@@ -399,7 +423,11 @@ mod tests {
         let pid = std::process::id();
         let mut system = System::new();
         let sysinfo_pid = Pid::from_u32(pid);
-        system.refresh_process_specifics(sysinfo_pid, ProcessRefreshKind::new());
+        system.refresh_processes_specifics(
+            sysinfo::ProcessesToUpdate::Some(&[sysinfo_pid]),
+            true,
+            ProcessRefreshKind::nothing(),
+        );
 
         // Use a wildly wrong creation time so it is classified as Zombie (PID reuse).
         let entry = TrackedEntry {
