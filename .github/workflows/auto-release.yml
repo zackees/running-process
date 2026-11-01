@@ -33,7 +33,7 @@ env:
   # are built (#561). Passed to zackees/setup-soldr as `version`; kept at the
   # release setup-soldr@v0 is vendor-locked to, so the action and the soldr
   # it drives were released together.
-  SOLDR_VERSION: "0.9.27"
+  SOLDR_VERSION: "0.9.45"
 
 jobs:
   detect-bump:
