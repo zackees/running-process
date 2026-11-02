@@ -643,6 +643,131 @@ jobs:
           path: ${{ steps.stage.outputs.archive }}
           if-no-files-found: error
 
+  # Authenticode-sign every Windows PE we ship -- _native.pyd and
+  # daemon-trampoline.exe inside both Windows wheels (RECORD rewritten), and
+  # runpm.exe / running-process-daemon.exe inside both windows-msvc zips --
+  # through Azure Artifact Signing over OIDC. The signed archives replace the
+  # unsigned artifacts under the same names, so PyPI, the GitHub Release and
+  # SHA256SUMS only ever see signed bytes. Fails closed: an unsigned PE, a bad
+  # RECORD or a non-Valid Get-AuthenticodeSignature verdict fails the job and
+  # blocks every publish job below. The ConPTY sidecar tarballs are left alone
+  # (Microsoft-signed, and their SHA-256 is baked into every build).
+  sign-windows:
+    name: Sign Windows binaries (Azure Artifact Signing)
+    needs:
+      - preflight
+      - build-wheels-windows-x86
+      - build-wheels-windows-arm
+      - build-binaries
+    if: |
+      always()
+      && github.event_name != 'pull_request'
+      && needs.preflight.result == 'success'
+      && needs.build-binaries.result == 'success'
+      && (needs.build-wheels-windows-x86.result == 'success' || needs.build-wheels-windows-x86.result == 'skipped')
+      && (needs.build-wheels-windows-arm.result == 'success' || needs.build-wheels-windows-arm.result == 'skipped')
+    runs-on: windows-2025
+    # The environment makes the OIDC subject
+    # `repo:zackees/running-process:environment:release-signing`, which Azure
+    # trusts regardless of ref -- a workflow_dispatch dry run from a feature
+    # branch signs exactly like a main/tag release.
+    environment: release-signing
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.preflight.outputs.checkout_ref }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - uses: actions/download-artifact@v4
+        if: needs.build-wheels-windows-x86.result == 'success'
+        with:
+          name: wheels-windows-x86
+          path: signing/wheels-windows-x86
+
+      - uses: actions/download-artifact@v4
+        if: needs.build-wheels-windows-arm.result == 'success'
+        with:
+          name: wheels-windows-arm
+          path: signing/wheels-windows-arm
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: binaries-x86_64-pc-windows-msvc
+          path: signing/binaries-x86_64-pc-windows-msvc
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: binaries-aarch64-pc-windows-msvc
+          path: signing/binaries-aarch64-pc-windows-msvc
+
+      - name: Azure login for Artifact Signing
+        uses: azure/login@a457da9ea143d694b1b9c7c869ebb04ebe844ef5 # v2.3.0
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          allow-no-subscriptions: true
+
+      - name: Authenticode-sign the Windows wheels and binaries
+        shell: bash
+        env:
+          AZURE_SIGNING_ENDPOINT: ${{ secrets.AZURE_SIGNING_ENDPOINT }}
+          AZURE_SIGNING_ACCOUNT: ${{ secrets.AZURE_SIGNING_ACCOUNT }}
+          AZURE_SIGNING_PROFILE: ${{ secrets.AZURE_SIGNING_PROFILE }}
+          AZURE_SIGN_PUBLISHER: ${{ secrets.AZURE_SIGN_PUBLISHER }}
+        run: |
+          set -euo pipefail
+          patterns=('signing/binaries-*/*.zip')
+          if compgen -G 'signing/wheels-*/*.whl' >/dev/null; then
+            patterns+=('signing/wheels-*/*.whl')
+          fi
+          python ci/sign_windows_release.py sign "${patterns[@]}"
+
+      - name: Windows reports a Valid Authenticode signature
+        shell: bash
+        run: |
+          set -euo pipefail
+          patterns=('signing/binaries-*/*.zip')
+          if compgen -G 'signing/wheels-*/*.whl' >/dev/null; then
+            patterns+=('signing/wheels-*/*.whl')
+          fi
+          python ci/sign_windows_release.py check "${patterns[@]}"
+
+      - uses: actions/upload-artifact@v4
+        if: needs.build-wheels-windows-x86.result == 'success'
+        with:
+          name: wheels-windows-x86
+          path: signing/wheels-windows-x86/*
+          if-no-files-found: error
+          overwrite: true
+
+      - uses: actions/upload-artifact@v4
+        if: needs.build-wheels-windows-arm.result == 'success'
+        with:
+          name: wheels-windows-arm
+          path: signing/wheels-windows-arm/*
+          if-no-files-found: error
+          overwrite: true
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: binaries-x86_64-pc-windows-msvc
+          path: signing/binaries-x86_64-pc-windows-msvc/*.zip
+          if-no-files-found: error
+          overwrite: true
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: binaries-aarch64-pc-windows-msvc
+          path: signing/binaries-aarch64-pc-windows-msvc/*.zip
+          if-no-files-found: error
+          overwrite: true
+
   publish-pypi:
     name: Publish PyPI
     runs-on: ubuntu-latest
@@ -654,6 +779,7 @@ jobs:
       - build-wheels-macos-arm
       - build-wheels-windows-x86
       - build-wheels-windows-arm
+      - sign-windows
     if: inputs.dry_run != true && needs.preflight.outputs.pypi_complete != 'true'
     environment: pypi
     permissions:
@@ -812,6 +938,7 @@ jobs:
       - build-wheels-windows-x86
       - build-wheels-windows-arm
       - build-binaries
+      - sign-windows
       - publish-pypi
       - publish-crates
     if: |
@@ -820,6 +947,7 @@ jobs:
       && needs.preflight.result == 'success'
       && needs.build-sidecars.result == 'success'
       && needs.build-binaries.result == 'success'
+      && needs.sign-windows.result == 'success'
       && (needs.build-wheels-linux-x86.result == 'success' || needs.build-wheels-linux-x86.result == 'skipped')
       && (needs.build-wheels-linux-arm.result == 'success' || needs.build-wheels-linux-arm.result == 'skipped')
       && (needs.build-wheels-macos-x86.result == 'success' || needs.build-wheels-macos-x86.result == 'skipped')
