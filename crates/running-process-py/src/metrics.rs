@@ -17,9 +17,10 @@ impl NativeProcessMetrics {
     fn new(pid: u32) -> Self {
         let pid = system_pid(pid);
         let mut system = System::new();
-        system.refresh_process_specifics(
-            pid,
-            ProcessRefreshKind::new()
+        system.refresh_processes_specifics(
+            sysinfo::ProcessesToUpdate::Some(&[pid]),
+            true,
+            ProcessRefreshKind::nothing()
                 .with_cpu()
                 .with_disk_usage()
                 .with_memory()
@@ -33,9 +34,10 @@ impl NativeProcessMetrics {
 
     pub(crate) fn prime(&self) {
         let mut system = self.system.lock().expect("process metrics mutex poisoned");
-        system.refresh_process_specifics(
-            self.pid,
-            ProcessRefreshKind::new()
+        system.refresh_processes_specifics(
+            sysinfo::ProcessesToUpdate::Some(&[self.pid]),
+            true,
+            ProcessRefreshKind::nothing()
                 .with_cpu()
                 .with_disk_usage()
                 .with_memory()
@@ -45,9 +47,10 @@ impl NativeProcessMetrics {
 
     pub(crate) fn sample(&self) -> (bool, f32, u64, u64) {
         let mut system = self.system.lock().expect("process metrics mutex poisoned");
-        system.refresh_process_specifics(
-            self.pid,
-            ProcessRefreshKind::new()
+        system.refresh_processes_specifics(
+            sysinfo::ProcessesToUpdate::Some(&[self.pid]),
+            true,
+            ProcessRefreshKind::nothing()
                 .with_cpu()
                 .with_disk_usage()
                 .with_memory()

@@ -149,7 +149,11 @@ fn wait_for_descendant(pid: u32) {
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
         let mut system = System::new();
-        system.refresh_processes();
+        system.refresh_processes_specifics(
+            sysinfo::ProcessesToUpdate::All,
+            true,
+            sysinfo::ProcessRefreshKind::everything(),
+        );
         if !descendant_pids(&system, system_pid(pid)).is_empty() {
             return;
         }

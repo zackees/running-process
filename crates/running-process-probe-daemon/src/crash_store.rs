@@ -1293,7 +1293,11 @@ fn process_session() -> Result<&'static StoreSession, CrashStoreError> {
     let pid = std::process::id();
     let mut system = System::new();
     let sys_pid = Pid::from_u32(pid);
-    system.refresh_process_specifics(sys_pid, ProcessRefreshKind::new());
+    system.refresh_processes_specifics(
+        sysinfo::ProcessesToUpdate::Some(&[sys_pid]),
+        true,
+        ProcessRefreshKind::nothing(),
+    );
     let process_start_ms = system
         .process(sys_pid)
         .map(|process| process.start_time().saturating_mul(1000))
@@ -1317,7 +1321,11 @@ fn session_is_alive(pid: u32, process_start_ms: u64, boot_id: &str) -> bool {
     }
     let mut system = System::new();
     let pid = Pid::from_u32(pid);
-    system.refresh_process_specifics(pid, ProcessRefreshKind::new());
+    system.refresh_processes_specifics(
+        sysinfo::ProcessesToUpdate::Some(&[pid]),
+        true,
+        ProcessRefreshKind::nothing(),
+    );
     system
         .process(pid)
         .is_some_and(|process| process.start_time().saturating_mul(1000) == process_start_ms)

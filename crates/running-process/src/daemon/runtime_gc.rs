@@ -87,7 +87,11 @@ fn read_runtime_dir_entry(dir: &Path) -> Option<RuntimeDirEntry> {
 
 fn process_matches(system: &mut System, pid: u32, spawned_at_unix_ms: Option<u64>) -> bool {
     let sys_pid = Pid::from_u32(pid);
-    system.refresh_process_specifics(sys_pid, ProcessRefreshKind::new());
+    system.refresh_processes_specifics(
+        sysinfo::ProcessesToUpdate::Some(&[sys_pid]),
+        true,
+        ProcessRefreshKind::nothing(),
+    );
     let Some(process) = system.process(sys_pid) else {
         return false;
     };
@@ -283,7 +287,11 @@ mod tests {
         let mut system = System::new();
         let my_pid = std::process::id();
         let sys_pid = Pid::from_u32(my_pid);
-        system.refresh_process_specifics(sys_pid, ProcessRefreshKind::new());
+        system.refresh_processes_specifics(
+            sysinfo::ProcessesToUpdate::Some(&[sys_pid]),
+            true,
+            ProcessRefreshKind::nothing(),
+        );
         let spawned_at_unix_ms = system.process(sys_pid).unwrap().start_time() * 1000;
 
         let mut sidecar = Map::new();

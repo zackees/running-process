@@ -28,7 +28,11 @@ fn shell_command(command: &str) -> Command {
 fn process_created_at(pid: u32) -> Option<f64> {
     let mut system = System::new();
     let sysinfo_pid = Pid::from_u32(pid);
-    system.refresh_process_specifics(sysinfo_pid, ProcessRefreshKind::new());
+    system.refresh_processes_specifics(
+        sysinfo::ProcessesToUpdate::Some(&[sysinfo_pid]),
+        true,
+        ProcessRefreshKind::nothing(),
+    );
     system
         .process(sysinfo_pid)
         .map(|process| process.start_time() as f64)

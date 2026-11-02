@@ -135,7 +135,11 @@ impl Registry {
 
         for (&(pid, created_at_ms), _entry) in processes.iter() {
             let sysinfo_pid = Pid::from_u32(pid);
-            system.refresh_process_specifics(sysinfo_pid, ProcessRefreshKind::new());
+            system.refresh_processes_specifics(
+                sysinfo::ProcessesToUpdate::Some(&[sysinfo_pid]),
+                true,
+                ProcessRefreshKind::nothing(),
+            );
 
             match system.process(sysinfo_pid) {
                 Some(proc) => {
@@ -322,7 +326,11 @@ impl Registry {
             let processes = self.processes.lock().unwrap();
             for (&(pid, created_at_ms), _entry) in processes.iter() {
                 let sysinfo_pid = Pid::from_u32(pid);
-                system.refresh_process_specifics(sysinfo_pid, ProcessRefreshKind::new());
+                system.refresh_processes_specifics(
+                    sysinfo::ProcessesToUpdate::Some(&[sysinfo_pid]),
+                    true,
+                    ProcessRefreshKind::nothing(),
+                );
 
                 match system.process(sysinfo_pid) {
                     Some(proc) => {
@@ -495,7 +503,11 @@ mod tests {
             let pid = std::process::id();
             let mut sys = System::new();
             let sysinfo_pid = Pid::from_u32(pid);
-            sys.refresh_process_specifics(sysinfo_pid, ProcessRefreshKind::new());
+            sys.refresh_processes_specifics(
+                sysinfo::ProcessesToUpdate::Some(&[sysinfo_pid]),
+                true,
+                ProcessRefreshKind::nothing(),
+            );
             let created_at_ms = sys
                 .process(sysinfo_pid)
                 .map(|p| p.start_time() * 1000)

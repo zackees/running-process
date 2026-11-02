@@ -26,7 +26,11 @@ pub fn is_process_alive(pid: u32) -> bool {
 
     let pid = sysinfo::Pid::from_u32(pid);
     let mut sys = System::new();
-    sys.refresh_process(pid);
+    sys.refresh_processes_specifics(
+        sysinfo::ProcessesToUpdate::Some(&[pid]),
+        true,
+        sysinfo::ProcessRefreshKind::everything(),
+    );
     sys.process(pid).is_some()
 }
 
