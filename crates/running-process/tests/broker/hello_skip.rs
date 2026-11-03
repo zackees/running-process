@@ -8,7 +8,7 @@ use std::time::Duration;
 use interprocess::local_socket::prelude::*;
 use interprocess::local_socket::ListenerOptions;
 use running_process::broker::client::{
-    connect_to_backend, BackendConnectionRoute, ConnectBackendRequest,
+    connect_to_backend, connect_to_backend_within, BackendConnectionRoute, ConnectBackendRequest,
 };
 use running_process::broker::server::local_socket_name;
 
@@ -29,6 +29,57 @@ fn connect_to_backend_direct_connects_to_cached_endpoint_when_versions_match() {
     connection.stream.write_all(&[0xA5]).unwrap();
     drop(connection.stream);
     backend.join().unwrap().unwrap();
+}
+
+#[test]
+fn connect_to_backend_within_connects_to_cached_endpoint_inside_budget() {
+    let cached_backend = unique_socket_name("backend-within");
+    let backend = spawn_accept_once(cached_backend.clone());
+
+    let mut request = ConnectBackendRequest::new("missing-broker", "zccache", "1.11.20", "1.11.20");
+    request.cached_backend_endpoint = Some(&cached_backend);
+    let mut connection = connect_to_backend_within(request, Duration::from_secs(1)).unwrap();
+
+    assert_eq!(connection.route, BackendConnectionRoute::HelloSkip);
+    connection.stream.write_all(&[0xA5]).unwrap();
+    drop(connection.stream);
+    backend.join().unwrap().unwrap();
+}
+
+#[test]
+fn connect_to_backend_within_times_out_on_unresponsive_broker() {
+    // The broker accepts the Hello connection and never replies. Without a
+    // budget this waits for the internal 30 s Hello bound.
+    let broker = unique_socket_name("stalled-broker");
+    let (release_tx, release_rx) = mpsc::channel::<()>();
+    let (ready_tx, ready_rx) = mpsc::channel();
+    let socket = broker.clone();
+    let holder = thread::spawn(move || -> io::Result<()> {
+        let listener = bind_test_socket(&socket)?;
+        ready_tx.send(()).unwrap();
+        let _stream = listener.accept()?;
+        let _ = release_rx.recv_timeout(Duration::from_secs(5));
+        cleanup_test_socket(&socket);
+        Ok(())
+    });
+    ready_rx.recv_timeout(Duration::from_secs(3)).unwrap();
+
+    let budget = Duration::from_millis(500);
+    let request = ConnectBackendRequest::new(&broker, "zccache", "1.11.20", "1.11.19");
+    let start = std::time::Instant::now();
+    let error = connect_to_backend_within(request, budget).unwrap_err();
+    let elapsed = start.elapsed();
+
+    assert!(elapsed < Duration::from_millis(1500), "took {elapsed:?}");
+    assert_eq!(error.connect_timed_out().map(|t| t.budget), Some(budget));
+    match &error {
+        running_process::broker::client::BrokerClientError::BackendConnect(source) => {
+            assert_eq!(source.kind(), io::ErrorKind::TimedOut);
+        }
+        other => panic!("expected BackendConnect(TimedOut), got {other:?}"),
+    }
+    release_tx.send(()).unwrap();
+    holder.join().unwrap().unwrap();
 }
 
 fn spawn_accept_once(socket_name: String) -> thread::JoinHandle<io::Result<()>> {
