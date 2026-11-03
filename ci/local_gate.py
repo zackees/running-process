@@ -22,7 +22,7 @@ from typing import TypeAlias
 
 JsonValue: TypeAlias = str | int | float | bool | list["JsonValue"] | dict[str, "JsonValue"] | None
 ROOT = Path(__file__).resolve().parents[1]
-CI_LINT_REF = "86b63937960d00655f7ef3752ef6f15b6b06f35b"
+CI_LINT_REF = "ef98004c3ac1c246428f1498f741b44eb9e65b25"
 WORKFLOW = ".github/workflows/ci.yml"
 SELECTED_JOB = "linux-quick"
 
