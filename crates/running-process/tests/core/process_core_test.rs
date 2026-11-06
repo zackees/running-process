@@ -674,6 +674,17 @@ fn captured_output_can_be_cleared_to_release_memory() {
     assert_eq!(process.captured_combined_bytes(), 0);
 }
 
+/// A niceness that lowers priority from wherever this process already runs.
+///
+/// `setpriority` is absolute, and lowering the value without `CAP_SYS_NICE` is
+/// EACCES, so a fixed 5 fails under an inherited nice above 5 (as in Bosn jobs).
+#[cfg(unix)]
+fn background_nice() -> i32 {
+    // SAFETY: reads this thread's niceness. An error also returns -1, which
+    // `max` maps to the same default.
+    unsafe { libc::getpriority(libc::PRIO_PROCESS as _, 0) }.max(5)
+}
+
 #[test]
 #[cfg(not(windows))]
 fn applies_positive_nice_before_exec() {
@@ -686,7 +697,7 @@ fn applies_positive_nice_before_exec() {
             ]),
             true,
             StdinMode::Inherit,
-            Some(5),
+            Some(background_nice()),
         )
     });
 
@@ -713,7 +724,7 @@ fn bounded_std_command_applies_positive_nice_before_exec() {
         4096,
         BoundedRunOptions::default()
             .kill_when_owner_dies(false)
-            .nice(Some(5)),
+            .nice(Some(background_nice())),
     )
     .unwrap();
 

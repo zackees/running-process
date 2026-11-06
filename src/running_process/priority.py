@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from enum import Enum
 
 
@@ -20,9 +21,21 @@ def normalize_nice(nice: int | CpuPriority | None) -> int | None:
 
 def _priority_to_nice(priority: CpuPriority) -> int:
     if priority is CpuPriority.MINIMAL:
-        return 15
+        return _background_nice(15)
     if priority is CpuPriority.LOW:
-        return 5
+        return _background_nice(5)
     if priority is CpuPriority.NORMAL:
         return 0
     return -5
+
+
+def _background_nice(nice: int) -> int:
+    """Keep a background request from raising the inherited priority.
+
+    `setpriority` is absolute and lowering the value without `CAP_SYS_NICE` is
+    EACCES, so a child of an already-niced parent could not otherwise spawn.
+    Windows has no `os.nice`, and its priority classes have no such restriction.
+    """
+    if not hasattr(os, "nice"):
+        return nice
+    return max(nice, os.nice(0))

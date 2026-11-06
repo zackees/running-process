@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import sys
 import tempfile
 from pathlib import Path
@@ -16,11 +17,17 @@ from running_process import (
     InteractiveMode,
     RunningProcess,
 )
+from running_process.priority import normalize_nice
 from tests.process_helpers import (
     WINDOWS_BELOW_NORMAL_PRIORITY_CLASS,
     windows_priority_class_script,
 )
 from tests.pty._pty_helpers import _read_until_contains
+
+
+def _background_nice() -> int:
+    """Absolute nice below the inherited one is EACCES; Bosn jobs inherit 10."""
+    return max(5, os.nice(0))
 
 
 def test_pseudo_terminal_can_set_positive_nice() -> None:
@@ -42,9 +49,9 @@ def test_pseudo_terminal_can_set_positive_nice() -> None:
     process = RunningProcess.pseudo_terminal(
         [sys.executable, "-c", "import os, time; time.sleep(0.3); print(os.nice(0), flush=True)"],
         text=True,
-        nice=5,
+        nice=_background_nice(),
     )
-    output = _read_until_contains(process, "5")
+    output = _read_until_contains(process, str(_background_nice()))
     assert int(output.strip().splitlines()[-1]) >= 5
     assert process.wait(timeout=5) == 0
 
@@ -81,7 +88,7 @@ def test_pseudo_terminal_accepts_priority_enum() -> None:
         output = _read_until_contains(process, str(WINDOWS_BELOW_NORMAL_PRIORITY_CLASS))
         assert str(WINDOWS_BELOW_NORMAL_PRIORITY_CLASS) in output
     else:
-        output = _read_until_contains(process, "5")
+        output = _read_until_contains(process, str(_background_nice()))
         assert int(output.strip().splitlines()[-1]) >= 5
     assert process.wait(timeout=5) == 0
 
@@ -105,7 +112,7 @@ def test_interactive_can_set_positive_nice() -> None:
         process = RunningProcess.interactive(
             [sys.executable, "-c", script],
             mode=InteractiveMode.CONSOLE_SHARED,
-            nice=5,
+            nice=5 if sys.platform == "win32" else _background_nice(),
         )
         assert process.wait(timeout=5) == 0
         observed = int(output_path.read_text(encoding="utf-8"))
@@ -138,3 +145,22 @@ def test_interactive_accepts_priority_enum() -> None:
         assert process.wait(timeout=5) == 0
         observed = int(output_path.read_text(encoding="utf-8"))
         assert observed >= expected
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX inherited-niceness semantics")
+@pytest.mark.parametrize(
+    ("priority", "inherited", "expected"),
+    [
+        (CpuPriority.LOW, 0, 5),
+        (CpuPriority.LOW, 10, 10),
+        (CpuPriority.MINIMAL, 10, 15),
+        (CpuPriority.MINIMAL, 19, 19),
+        (CpuPriority.NORMAL, 10, 0),
+    ],
+)
+def test_background_priority_never_raises_inherited_priority(
+    monkeypatch: pytest.MonkeyPatch, priority: CpuPriority, inherited: int, expected: int
+) -> None:
+    """A forbidden raise would fail the spawn with EACCES without CAP_SYS_NICE."""
+    monkeypatch.setattr(os, "nice", lambda _increment: inherited)
+    assert normalize_nice(priority) == expected

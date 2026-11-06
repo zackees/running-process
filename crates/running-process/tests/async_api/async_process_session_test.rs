@@ -197,10 +197,26 @@ async fn session_kill_and_wait_remain_responsive_while_stdin_is_blocked() {
     );
 }
 
-#[tokio::test]
-async fn session_cpu_sample_is_identity_bound_and_progresses_when_supported() {
+/// A niceness that lowers priority from wherever this process already runs.
+///
+/// `setpriority` is absolute, and lowering the value without `CAP_SYS_NICE` is
+/// EACCES, so a fixed 5 only works for callers already at 5 or below.
+fn background_nice() -> i32 {
+    #[cfg(unix)]
+    {
+        // SAFETY: reads this thread's niceness. An error also returns -1, which
+        // `max` maps to the same default.
+        unsafe { libc::getpriority(libc::PRIO_PROCESS as _, 0) }.max(5)
+    }
+    #[cfg(not(unix))]
+    {
+        5
+    }
+}
+
+async fn assert_cpu_sample_progresses(nice: i32) {
     let mut session = AsyncProcessBuilder::new(testbin("testbin-session-cpu-spinner"))
-        .nice(Some(5))
+        .nice(Some(nice))
         .session(options());
     session.start().await.expect("start CPU fixture");
     let before = session.cpu_time().await.expect("CPU sample request");
@@ -210,6 +226,24 @@ async fn session_cpu_sample_is_identity_bound_and_progresses_when_supported() {
         assert!(after >= before, "direct-child CPU time is monotonic");
     }
     session.kill().await.expect("kill CPU fixture");
+}
+
+#[tokio::test]
+async fn session_cpu_sample_is_identity_bound_and_progresses_when_supported() {
+    assert_cpu_sample_progresses(background_nice()).await;
+}
+
+/// Regression: Bosn's engine runs jobs at an inherited nice of 10 with no
+/// `CAP_SYS_NICE`, where the absolute `setpriority(5)` is a forbidden priority
+/// raise and fails the spawn with EACCES.
+#[cfg(unix)]
+#[tokio::test]
+async fn session_cpu_sample_starts_when_inherited_niceness_exceeds_the_default() {
+    // SAFETY: only adjusts this test's calling thread, and nextest gives each
+    // test its own process. Raising niceness needs no privilege.
+    let raised = unsafe { libc::setpriority(libc::PRIO_PROCESS as _, 0, 10) };
+    assert_eq!(raised, 0, "raise inherited niceness");
+    assert_cpu_sample_progresses(background_nice()).await;
 }
 
 #[cfg(unix)]
