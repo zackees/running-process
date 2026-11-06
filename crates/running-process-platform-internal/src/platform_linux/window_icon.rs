@@ -186,7 +186,9 @@ fn decode_png(bytes: &[u8]) -> Result<Rgba, IconError> {
         // Opaque source: synthesize full alpha rather than refusing, because a
         // photo-style PNG with no alpha channel is a perfectly ordinary icon.
         png::ColorType::Rgb => buffer[..info.buffer_size()]
-            .chunks_exact(3)
+            .as_chunks::<3>()
+            .0
+            .iter()
             .flat_map(|p| [p[0], p[1], p[2], 0xff])
             .collect(),
         other => {
@@ -209,7 +211,7 @@ pub(super) fn to_cardinals(image: &Rgba) -> Vec<u32> {
     let mut data = Vec::with_capacity(2 + (image.width * image.height) as usize);
     data.push(image.width);
     data.push(image.height);
-    for pixel in image.pixels.chunks_exact(4) {
+    for pixel in image.pixels.as_chunks::<4>().0 {
         data.push(
             (u32::from(pixel[3]) << 24)
                 | (u32::from(pixel[0]) << 16)
