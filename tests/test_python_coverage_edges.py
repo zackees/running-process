@@ -202,8 +202,10 @@ class TestExpectPriorityAndExitEdges(unittest.TestCase):
     def test_priority_and_exit_status_cover_all_classifications(self) -> None:
         self.assertIsNone(priority.normalize_nice(None))
         self.assertEqual(priority.normalize_nice(3), 3)
-        self.assertEqual(priority.normalize_nice(priority.CpuPriority.MINIMAL), 15)
-        self.assertEqual(priority.normalize_nice(priority.CpuPriority.LOW), 5)
+        # The base mapping, independent of the niceness this runner inherited.
+        with mock.patch.object(priority.os, "nice", return_value=0, create=True):
+            self.assertEqual(priority.normalize_nice(priority.CpuPriority.MINIMAL), 15)
+            self.assertEqual(priority.normalize_nice(priority.CpuPriority.LOW), 5)
         self.assertEqual(priority.normalize_nice(priority.CpuPriority.NORMAL), 0)
         self.assertEqual(priority.normalize_nice(priority.CpuPriority.HIGH), -5)
         with self.assertRaises(TypeError):

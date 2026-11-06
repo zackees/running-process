@@ -133,9 +133,11 @@ def test_running_process_can_set_positive_nice() -> None:
         assert int(process.stdout) == WINDOWS_BELOW_NORMAL_PRIORITY_CLASS
         return
 
+    # Setting an absolute nice below the inherited one is EACCES without
+    # CAP_SYS_NICE, and Bosn jobs inherit nice 10.
     process = RunningProcess(
         [sys.executable, "-c", "import os; print(os.nice(0))"],
-        nice=5,
+        nice=max(5, os.nice(0)),
     )
     process.wait()
     assert int(process.stdout) >= 5
