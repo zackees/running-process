@@ -359,7 +359,6 @@ mod tests {
 mod compatibility_tests {
     use std::any::TypeId;
 
-    use prost::Message as _;
     use tempfile::tempdir;
 
     use super::*;

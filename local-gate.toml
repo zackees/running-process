@@ -16,6 +16,16 @@ run = ["uv", "run", "--no-project", "--python", "3.11", "python", "ci/local_gate
 tools = ["bosn", "docker"]
 # No exclusions until input-reuse evidence proves them safe.
 
+[gate.lanes.dylint]
+run = ["uv", "run", "--no-project", "--python", "3.11", "python", "ci/dylint_gate.py"]
+tools = ["soldr", "rustup"]
+# Both repo-owned lint libraries run over the workspace. The platform-boundary
+# lint is pre-expansion, so it inspects cfg-inactive OS branches from one host;
+# the env-literal lint is a late lint and only sees the host module graph, so a
+# cross-target pass for it is still outstanding (see ci/dylint_gate.py).
+# A missing nightly skips with instructions instead of failing the gate, which
+# matches ./lint; set RUNNING_PROCESS_REQUIRE_DYLINT=1 to make it a failure.
+
 [gate.trust]
 mode = "enforce"
 skip = ["ci.yml:linux-quick"]

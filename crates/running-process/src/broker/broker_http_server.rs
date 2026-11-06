@@ -125,7 +125,7 @@ fn handle_one(mut stream: TcpStream, registry: &HttpEndpointRegistry) -> std::io
         if buf[0] == b'\r' {
             let mut peek = [0u8; 3];
             let n = reader.read(&mut peek)?;
-            if n >= 3 && peek == [b'\n', b'\r', b'\n'] {
+            if n >= 3 && peek == *b"\n\r\n" {
                 headers_done = true;
             }
         }
