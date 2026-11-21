@@ -5,6 +5,8 @@
 //! `tests/rpprobe_cli_test.rs`, because it needs a daemon process and these
 //! do not.
 
+use clap::Parser as _;
+
 use super::*;
 
 // --- argument parsing -----------------------------------------------------

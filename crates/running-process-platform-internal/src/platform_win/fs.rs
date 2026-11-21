@@ -219,9 +219,7 @@ pub fn decode_path_bytes(bytes: &[u8]) -> io::Result<PathBuf> {
         ));
     }
     let wide = bytes
-        .as_chunks::<2>()
-        .0
-        .iter()
+        .chunks_exact(2)
         .map(|chunk| u16::from_le_bytes([chunk[0], chunk[1]]))
         .collect::<Vec<_>>();
     Ok(PathBuf::from(std::ffi::OsString::from_wide(&wide)))
