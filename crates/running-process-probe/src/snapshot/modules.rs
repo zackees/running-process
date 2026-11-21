@@ -99,7 +99,7 @@ unsafe fn loaded_pe_debug_info(base: u64, image_size: u64) -> Option<(String, St
     let directory_address = base.checked_add(directory_start)?;
     let bytes =
         unsafe { std::slice::from_raw_parts(directory_address as *const u8, directory_size) };
-    for entry in bytes.chunks_exact(DEBUG_DIRECTORY_SIZE) {
+    for entry in bytes.as_chunks::<DEBUG_DIRECTORY_SIZE>().0 {
         let kind = u32::from_le_bytes(entry[12..16].try_into().ok()?);
         if kind != IMAGE_DEBUG_TYPE_CODEVIEW {
             continue;

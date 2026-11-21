@@ -308,10 +308,9 @@ fn load_object_for_identity(path: &Path, expected: &str) -> Option<SymbolTable> 
 fn identity_from_file(file: &object::File<'_>) -> Option<String> {
     let identity = if let Some(build_id) = file.build_id().ok()? {
         format!("elf:{}", hex(build_id))
-    } else if let Some(uuid) = file.mach_uuid().ok()? {
-        format!("macho:{}", hex(&uuid))
     } else {
-        return None;
+        let uuid = file.mach_uuid().ok()??;
+        format!("macho:{}", hex(&uuid))
     };
     Some(identity)
 }
