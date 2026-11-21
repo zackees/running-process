@@ -9,9 +9,9 @@ the proof this local execution is about to produce.
 Lint never runs under bosn; soldr lint only. The replay dispatches with
 ``host_lint=true``, which skips the preflight ``Lint`` step and the ``dylint``
 job, and the proof rejects a receipt in which either executed. ``--lane lint``
-runs that lint on the host: ``soldr lint rust --check`` (rustfmt, Clippy and the
-configured Dylint libraries, plus the platform-boundary Dylint as a
-``[workspace.metadata.soldr.lint]`` extra), the two Dylint fixture suites, and
+runs that lint on the host: ``soldr lint rust --check`` (Clippy and the
+dylint.toml library), ``soldr cargo fmt --all -- --check``, the
+platform-boundary Dylint, the two Dylint fixture suites, and
 ``ci.lint --no-rust`` (the repository's Python guards, contracts and Ruff).
 """
 
@@ -305,6 +305,20 @@ def lint_commands() -> list[tuple[list[str], Path]]:
     ]
     return [
         (["soldr", "lint", "rust", "--check"], ROOT),
+        (["soldr", "cargo", "fmt", "--all", "--", "--check"], ROOT),
+        (
+            [
+                "soldr",
+                "dylint",
+                "--all",
+                "--path",
+                "lints",
+                "--pattern",
+                "running-process-platform-boundary",
+                "--workspace",
+            ],
+            ROOT,
+        ),
         *fixtures,
         (["uv", "sync", "--no-editable"], ROOT),
         (["uv", "run", "--no-sync", "--no-editable", "-m", "ci.lint", "--no-rust"], ROOT),
@@ -335,8 +349,11 @@ def run_lint_lane() -> int:
         lane_env = env
         if cwd != ROOT:
             # Linked fixtures get their own target dir, as in CI.
-            lane_env = {**env, "CARGO_BIN": "cargo",
-                        "CARGO_TARGET_DIR": str(ROOT / "target" / "dylint-fixtures")}
+            lane_env = {
+                **env,
+                "CARGO_BIN": "cargo",
+                "CARGO_TARGET_DIR": str(ROOT / "target" / "dylint-fixtures"),
+            }
         if subprocess.run(argv, cwd=cwd, env=lane_env, check=False).returncode:
             print(f"local gate: lint failed: {' '.join(argv)}")
             return 1

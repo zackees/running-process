@@ -601,8 +601,9 @@ The `linux-quick` lane runs the existing Linux quick workflow through Bosn's
 released act2 engine in isolation, dispatched with `host_lint=true`. It checks
 the exact committed source and completion of every required build, wheel,
 contract, Rust/Python test and performance step. Lint never runs under Bosn:
-the `lint` lane runs rustfmt, Clippy and both Dylint libraries through
-`soldr lint rust --check` on the host, then the Dylint fixture suites and
+the `lint` lane runs Clippy and Dylint through `soldr lint rust --check`
+on the host, then rustfmt, the platform-boundary Dylint, the Dylint fixture
+suites and
 `ci.lint --no-rust` (Python guards, contracts, Ruff). Both lanes must pass
 before the gate adds source-bound commit attestations.
 Push the stamped commit. An unchanged attested head can reuse its proof;

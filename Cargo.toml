@@ -48,18 +48,14 @@ disallowed_methods = "deny"
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(coverage)', 'cfg(dylint_lib, values(any()))'] }
 
 # `soldr lint` (soldr#3958) is the one lint front door, on the host: lint never
-# runs under bosn. dylint.toml configures the env-literal library; the
-# platform-boundary library runs as an extra, exactly as CI's `dylint` job and
-# ci/dylint_gate.py select it. Formatting is CI's own `cargo fmt --all --check`
-# extra rather than the built-in `fmt` step: that step also rewrites the
-# platform sources reached only through cfg-gated `#[path]`/`include!`
-# fragments, which cargo fmt (and CI) leave as they are.
+# runs under bosn. Its Dylint step runs dylint.toml's env-literal library.
+# ci/local_gate.py's lint lane runs CI's `cargo fmt --all --check` and the
+# platform-boundary Dylint beside it: an `extra` may not re-enter soldr
+# (SOLDR_REENTRANCY_GUARD), and the built-in `fmt` step also rewrites the
+# cfg-gated `#[path]`/`include!` platform fragments that cargo fmt (and CI)
+# leave as they are.
 [workspace.metadata.soldr.lint]
 steps = ["clippy", "dylint"]
-extra = [
-    ["soldr", "cargo", "fmt", "--all", "--", "--check"],
-    ["soldr", "dylint", "--all", "--path", "lints", "--pattern", "running-process-platform-boundary", "--workspace"],
-]
 
 [profile.release]
 # Line tables for OUR crates, so a release-mode stack can be resolved to
