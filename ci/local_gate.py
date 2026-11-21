@@ -347,6 +347,11 @@ def run_lint_lane() -> int:
     for argv, cwd in lint_commands():
         print(f"local gate lint: {' '.join(argv)}", flush=True)
         lane_env = env
+        if argv[:2] == ["soldr", "lint"]:
+            # soldr lint takes the Dylint nightly from the lint crates' own
+            # rust-toolchain.toml; an inherited SOLDR_DYLINT_TOOLCHAIN would
+            # also move its Clippy step onto that nightly.
+            lane_env = {k: v for k, v in env.items() if k != "SOLDR_DYLINT_TOOLCHAIN"}
         if cwd != ROOT:
             # Linked fixtures get their own target dir, as in CI.
             lane_env = {
