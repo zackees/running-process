@@ -47,6 +47,20 @@ disallowed_methods = "deny"
 # gates each crate's opt-in to `running_process_env_direct` (#1101).
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(coverage)', 'cfg(dylint_lib, values(any()))'] }
 
+# `soldr lint` (soldr#3958) is the one lint front door, on the host: lint never
+# runs under bosn. dylint.toml configures the env-literal library; the
+# platform-boundary library runs as an extra, exactly as CI's `dylint` job and
+# ci/dylint_gate.py select it. Formatting is CI's own `cargo fmt --all --check`
+# extra rather than the built-in `fmt` step: that step also rewrites the
+# platform sources reached only through cfg-gated `#[path]`/`include!`
+# fragments, which cargo fmt (and CI) leave as they are.
+[workspace.metadata.soldr.lint]
+steps = ["clippy", "dylint"]
+extra = [
+    ["soldr", "cargo", "fmt", "--all", "--", "--check"],
+    ["soldr", "dylint", "--all", "--path", "lints", "--pattern", "running-process-platform-boundary", "--workspace"],
+]
+
 [profile.release]
 # Line tables for OUR crates, so a release-mode stack can be resolved to
 # file:line all the way into the Rust frames (#803). Full `debug = true` is

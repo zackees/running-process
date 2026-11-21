@@ -19,27 +19,8 @@
           {
             "job_id": "dylint",
             "status": "completed",
-            "conclusion": "success",
-            "sections": [
-              {
-                "name": "Dylint negative fixture",
-                "stage": "Main",
-                "status": "completed",
-                "conclusion": "success"
-              },
-              {
-                "name": "Dylint platform-boundary fixture",
-                "stage": "Main",
-                "status": "completed",
-                "conclusion": "success"
-              },
-              {
-                "name": "Dylint workspace gate",
-                "stage": "Main",
-                "status": "completed",
-                "conclusion": "success"
-              }
-            ]
+            "conclusion": "skipped",
+            "sections": []
           },
           {
             "job_id": "lint-gates",
@@ -75,7 +56,7 @@
                 "name": "Lint",
                 "stage": "Main",
                 "status": "completed",
-                "conclusion": "success"
+                "conclusion": "skipped"
               },
               {
                 "name": "Record kernel substrate timing",

@@ -18,6 +18,15 @@ on:
         type: boolean
         required: false
         default: false
+      # Lint never runs under bosn; soldr lint only. The local gate replays
+      # linux-quick through bosn with host_lint=true, which drops the Lint
+      # step and the Dylint job from the replay; its host `lint` lane
+      # (ci/local_gate.py --lane lint, `soldr lint`) runs them instead.
+      host_lint:
+        description: Lint runs on the host (local gate); skip the Lint step and Dylint job here.
+        type: boolean
+        required: false
+        default: false
 
 permissions:
   contents: read
@@ -90,7 +99,8 @@ jobs:
       label: linux-x86
       rustdoc: false
       integration-test: ${{ github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'ci-integration') }}
-      dylint: true
+      dylint: ${{ !(github.event_name == 'workflow_dispatch' && inputs.host_lint) }}
+      lint: ${{ !(github.event_name == 'workflow_dispatch' && inputs.host_lint) }}
 
   linux-full:
     needs: [ci-mode]

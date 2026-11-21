@@ -48,6 +48,37 @@ class LocalGateProofTests(unittest.TestCase):
         self.document["event"] = "workflow_dispatch"
         self.assertIsNone(self.error())
 
+    def test_replay_leaves_lint_to_the_host_lane(self) -> None:
+        """Lint never runs under bosn; soldr lint only."""
+        command = local_gate.command()
+        self.assertIn("host_lint=true", command)
+        tree = local_gate.document(self.document["tree"])
+        group = local_gate.document(local_gate.values(tree["groups"])[0])
+        jobs = [local_gate.document(job) for job in local_gate.values(group["jobs"])]
+        dylint = next(job for job in jobs if job["job_id"] == "dylint")
+        preflight = next(job for job in jobs if job["job_id"] == "preflight")
+        lint = next(
+            local_gate.document(section)
+            for section in local_gate.values(preflight["sections"])
+            if local_gate.document(section)["name"] == "Lint"
+        )
+        # A skipped or omitted Dylint job and Lint step prove the selection.
+        group["jobs"] = [job for job in jobs if job is not dylint]
+        self.assertIsNone(self.error())
+        group["jobs"] = jobs
+        # Lint executing in bosn rejects the receipt.
+        lint["conclusion"] = "success"
+        self.assertIsNotNone(self.error())
+        lint["conclusion"] = "skipped"
+        dylint["conclusion"] = "success"
+        self.assertIsNotNone(self.error())
+
+    def test_lint_lane_runs_soldr_lint_on_the_host(self) -> None:
+        commands = [argv for argv, _ in local_gate.lint_commands()]
+        self.assertEqual(commands[0], ["soldr", "lint", "rust", "--check"])
+        self.assertIn("--no-rust", commands[-1])
+        self.assertFalse(any(argv[0] == "bosn" for argv in commands))
+
     def test_posix_receipt_workspace_counts_as_located_on_every_host(self) -> None:
         # The receipt comes from a Linux container; Windows pathlib reports
         # `/work/repo` as not absolute (no drive), which failed every real
@@ -96,9 +127,13 @@ class LocalGateProofTests(unittest.TestCase):
         jobs = local_gate.values(group["jobs"])
         for job_value in jobs:
             job = local_gate.document(job_value)
+            if job["job_id"] == "dylint":
+                continue  # skipped by host_lint; covered above
             sections = local_gate.values(job["sections"])
             for section_value in sections:
                 section = local_gate.document(section_value)
+                if section["name"] == "Lint":
+                    continue  # skipped by host_lint; covered above
                 for field, invalid in {
                     "stage": "Pre",
                     "status": "running",

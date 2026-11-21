@@ -597,10 +597,14 @@ clean worktree on a native Linux x64 host with Docker and published Bosn
 uvx --from git+https://github.com/zackees/ci.yml@86b63937960d00655f7ef3752ef6f15b6b06f35b ci-lint local-gate run
 ```
 
-The helper runs the existing Linux quick workflow through Bosn's released
-act2 engine in isolation. It checks the exact committed source and completion
-of every required build, wheel, lint, Dylint fixture, contract, Rust/Python
-test and performance step before adding source-bound commit attestations.
+The `linux-quick` lane runs the existing Linux quick workflow through Bosn's
+released act2 engine in isolation, dispatched with `host_lint=true`. It checks
+the exact committed source and completion of every required build, wheel,
+contract, Rust/Python test and performance step. Lint never runs under Bosn:
+the `lint` lane runs rustfmt, Clippy and both Dylint libraries through
+`soldr lint rust --check` on the host, then the Dylint fixture suites and
+`ci.lint --no-rust` (Python guards, contracts, Ruff). Both lanes must pass
+before the gate adds source-bound commit attestations.
 Push the stamped commit. An unchanged attested head can reuse its proof;
 changed inputs must pass the declared gate.
 

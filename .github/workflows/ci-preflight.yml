@@ -47,6 +47,10 @@ on:
         description: Run both workspace Dylints (Linux x86 on every PR; macOS/Windows x86 on their opt-in tiers).
         type: boolean
         default: false
+      lint:
+        description: Run the Lint step. The local gate's bosn replay sets false; lint never runs under bosn (soldr lint on the host).
+        type: boolean
+        default: true
       cache-key-suffix:
         description: Stable cache family name for this lane.
         type: string
@@ -162,7 +166,7 @@ jobs:
         run: uv run --no-sync --module ci.run_logged logs/dev-build.log -- uv run --no-sync --module ci.build_wheel --dev
 
       - name: Lint
-        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        if: ${{ !cancelled() && steps.build.outcome == 'success' && inputs.lint }}
         env:
           RUNNING_PROCESS_LINT_COMMAND_TIMEOUT_SECONDS: "300"
         run: uv run --no-sync --module ci.run_logged logs/lint.log -- uv run --no-sync --module ci.lint
