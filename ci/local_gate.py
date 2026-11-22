@@ -35,6 +35,20 @@ ROOT = Path(__file__).resolve().parents[1]
 CI_LINT_REF = "86b63937960d00655f7ef3752ef6f15b6b06f35b"
 WORKFLOW = ".github/workflows/ci.yml"
 SELECTED_JOB = "linux-quick"
+# The bosn replay's deadline. A loaded shared host can need longer than the
+# default to build the preflight, so the gate operator may raise it; it only
+# bounds the wait and never changes what the replay must prove.
+DEADLINE_ENV = "RUNNING_PROCESS_GATE_DEADLINE_SECS"
+DEFAULT_DEADLINE_SECS = 3600
+
+
+def deadline_secs() -> int:
+    raw = os.environ.get(DEADLINE_ENV, "").strip()
+    if not raw:
+        return DEFAULT_DEADLINE_SECS
+    if not raw.isdigit() or int(raw) <= 0:
+        raise ValueError(f"{DEADLINE_ENV} must be a positive number of seconds, got {raw!r}")
+    return int(raw)
 
 
 @dataclass(frozen=True)
@@ -258,6 +272,7 @@ def _static_checks() -> None:
 
 
 def command() -> list[str]:
+    deadline = deadline_secs()
     return [
         "bosn",
         "ci",
@@ -275,10 +290,10 @@ def command() -> list[str]:
         "--mode",
         "minimal",
         "--timeout-secs",
-        "3600",
+        str(deadline),
         "--wait",
         "--deadline-ms",
-        "3600000",
+        str(deadline * 1000),
         "--json",
     ]
 

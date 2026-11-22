@@ -48,6 +48,24 @@ class LocalGateProofTests(unittest.TestCase):
         self.document["event"] = "workflow_dispatch"
         self.assertIsNone(self.error())
 
+    def test_replay_deadline_defaults_to_an_hour_and_can_be_raised(self) -> None:
+        def deadline(command: list[str]) -> tuple[str, str]:
+            return (
+                command[command.index("--timeout-secs") + 1],
+                command[command.index("--deadline-ms") + 1],
+            )
+
+        with patch.dict(local_gate.os.environ, {local_gate.DEADLINE_ENV: ""}):
+            self.assertEqual(deadline(local_gate.command()), ("3600", "3600000"))
+        with patch.dict(local_gate.os.environ, {local_gate.DEADLINE_ENV: "10800"}):
+            self.assertEqual(deadline(local_gate.command()), ("10800", "10800000"))
+        for bad in ("0", "-5", "soon"):
+            with (
+                patch.dict(local_gate.os.environ, {local_gate.DEADLINE_ENV: bad}),
+                self.assertRaises(ValueError),
+            ):
+                local_gate.command()
+
     def test_replay_leaves_lint_to_the_host_lane(self) -> None:
         """Lint never runs under bosn; soldr lint only."""
         tree = local_gate.document(self.document["tree"])
