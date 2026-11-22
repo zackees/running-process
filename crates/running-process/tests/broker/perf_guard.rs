@@ -100,10 +100,28 @@ fn hello_perf_guard_rejects_slow_p99() {
     );
 }
 
+/// zackees/running-process#1374: a latency budget measured inside a bosn (act)
+/// replay on a loaded shared host is meaningless. act sets `ACT` in every
+/// replayed job and GitHub-hosted runners never do, so hosted CI still
+/// enforces the budget.
+fn quarantined_under_bosn_replay(test: &str) -> bool {
+    if std::env::var_os("ACT").is_none() {
+        return false;
+    }
+    eprintln!(
+        "skipping {test} under a bosn/act replay (ACT is set): \
+         https://github.com/zackees/running-process/issues/1374"
+    );
+    true
+}
+
 #[test]
 fn real_socket_hello_roundtrip_perf_gate() {
     if std::env::var_os(HELLO_PERF_GUARD_ENV).is_none() {
         eprintln!("skipping real socket Hello perf gate; set {HELLO_PERF_GUARD_ENV}=1");
+        return;
+    }
+    if quarantined_under_bosn_replay("real_socket_hello_roundtrip_perf_gate") {
         return;
     }
 
