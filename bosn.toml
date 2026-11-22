@@ -10,7 +10,7 @@ workdir = "/work"
 repo = { source = ".", destination = "/work", readonly = true }
 
 [stack.linux.env]
-# `uv sync` performs the PEP 517 native build before the managed lint/test
+# `uv sync` performs the PEP 517 native build before the managed test
 # command starts. Docker Desktop's CPU count is not a safe proxy for the
 # memory available to that build, so bound both the build scheduler and the
 # compiler/cache wrapper here. Stack environment participates in Bosn's
@@ -26,9 +26,8 @@ rustup-home = { scope = "machine", destination = "/usr/local/rustup" }
 uv-cache = { scope = "machine", destination = "/uv/cache" }
 uv-venv = { scope = "stack", destination = "/uv/venv" }
 
-[task.lint]
-stack = "linux"
-cmd = "bash ./lint"
+# No lint task: lint never runs under bosn (GATE-016). Lint on the host with
+# `soldr lint` (`python ci/local_gate.py --lane lint` runs the gate's lane).
 
 [task.test]
 stack = "linux"

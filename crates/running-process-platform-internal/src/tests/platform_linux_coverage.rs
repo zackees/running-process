@@ -302,7 +302,10 @@ fn nice_only_spawn_reports_the_requested_niceness_once_spawn_completes() {
         .unwrap();
     runtime.block_on(async {
         // Raising the value only lowers priority, so no CAP_SYS_NICE is needed.
-        let requested = niceness(std::process::id()).max(0) + 3;
+        // Clamp to the maximum, 19: a test already running at 17 or above (a
+        // bosn replay whose daemon runs at nice 19) would otherwise ask for
+        // more than the kernel can apply.
+        let requested = (niceness(std::process::id()).max(0) + 3).min(19);
         let mut command = Command::new("/bin/sleep");
         command.arg("30").kill_on_drop(true);
         configure_command(&mut command, false, false, Some(requested)).unwrap();

@@ -47,6 +47,29 @@ disallowed_methods = "deny"
 # gates each crate's opt-in to `running_process_env_direct` (#1101).
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(coverage)', 'cfg(dylint_lib, values(any()))'] }
 
+# Every platform the per-platform CI preflights build. `soldr lint rust`
+# Clippy-checks each from one Linux host (soldr#3378), and `--cross-dylint`
+# runs the dylint.toml library on each, so Windows/macOS/arm64 cfg code is
+# linted without a lint step on those runners.
+[workspace.metadata.soldr]
+targets = [
+  "aarch64-unknown-linux-gnu",
+  "x86_64-apple-darwin",
+  "aarch64-apple-darwin",
+  "x86_64-pc-windows-msvc",
+  "aarch64-pc-windows-msvc",
+]
+
+# `soldr lint` (soldr#3958) is the one lint front door, on the host: lint never
+# runs under bosn. Its Dylint step runs dylint.toml's env-literal library.
+# ci/local_gate.py's lint lane runs CI's `cargo fmt --all --check` and the
+# platform-boundary Dylint beside it: an `extra` may not re-enter soldr
+# (SOLDR_REENTRANCY_GUARD), and the built-in `fmt` step also rewrites the
+# cfg-gated `#[path]`/`include!` platform fragments that cargo fmt (and CI)
+# leave as they are.
+[workspace.metadata.soldr.lint]
+steps = ["clippy", "dylint"]
+
 [profile.release]
 # Line tables for OUR crates, so a release-mode stack can be resolved to
 # file:line all the way into the Rust frames (#803). Full `debug = true` is

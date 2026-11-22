@@ -57,7 +57,12 @@ def supervised_command(python: Path, *command: str) -> list[str]:
     ]
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
+    # `--no-rust` (the local gate's host lint lane): skip rustfmt, Clippy and
+    # Dylint here, because that lane runs them through `soldr lint`. Lint
+    # never runs under bosn.
+    argv = sys.argv[1:] if argv is None else argv
+    rust = "--no-rust" not in argv
     activate, _ = load_env_helpers()
     activate()
     python = repo_python()
@@ -154,7 +159,7 @@ def main() -> int:
     # green while the committed tree drifted. It also silently rewrote
     # contributors' working trees, sweeping unrelated files into their
     # commits. Verifying instead of mutating fixes both. See #694.
-    if (
+    if rust and (
         run(supervised_command(python, *cargo_command("fmt", "--all", "--", "--check")))
         != 0
     ):
@@ -165,7 +170,7 @@ def main() -> int:
             flush=True,
         )
         return 1
-    if (
+    if rust and (
         run(
             supervised_command(
                 python,
@@ -232,7 +237,7 @@ def main() -> int:
     # a cold build of the nightly lint dependencies outlasts the per-command
     # timeout, and the module skips (or, with RUNNING_PROCESS_REQUIRE_DYLINT=1,
     # fails) by itself when the pinned toolchain is absent.
-    if run([str(python), "-m", "ci.dylint_gate"]) != 0:
+    if rust and run([str(python), "-m", "ci.dylint_gate"]) != 0:
         return 1
     return 0
 

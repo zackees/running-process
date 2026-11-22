@@ -125,6 +125,27 @@ def test_child_python_env_defaults_to_utf8_replace() -> None:
     assert process.stdout.splitlines() == ["1", "1", "utf-8"]
 
 
+# POSIX nice tests only ever raise niceness: 19 (the maximum) for an int and
+# CpuPriority.MINIMAL (15) for the enum. A lower value needs CAP_SYS_NICE when
+# the test itself runs above it (a bosn replay on a host whose daemon runs
+# SCHED_IDLE at nice 10), and the spawn fails with EACCES. Windows keeps
+# nice=5 / CpuPriority.LOW (BELOW_NORMAL_PRIORITY_CLASS).
+POSIX_NICE = 19
+POSIX_PRIORITY = CpuPriority.MINIMAL
+POSIX_PRIORITY_NICE = 15
+
+
+def _require_posix_niceness_at_most(target: int) -> None:
+    """Lowering niceness needs CAP_SYS_NICE. A test process that already runs
+    nicer than `target` (a bosn replay whose daemon runs at nice 19) cannot
+    exercise this request; hosted runners start at 0."""
+    if sys.platform != "win32" and os.nice(0) > target:
+        pytest.skip(
+            f"this process already runs at nice {os.nice(0)}; "
+            f"requesting {target} would need CAP_SYS_NICE"
+        )
+
+
 def test_running_process_can_set_positive_nice() -> None:
     if sys.platform == "win32":
         script = windows_priority_class_script()
@@ -135,13 +156,14 @@ def test_running_process_can_set_positive_nice() -> None:
 
     process = RunningProcess(
         [sys.executable, "-c", "import os; print(os.nice(0))"],
-        nice=5,
+        nice=POSIX_NICE,
     )
     process.wait()
-    assert int(process.stdout) >= 5
+    assert int(process.stdout) == POSIX_NICE
 
 
 def test_running_process_accepts_platform_neutral_priority_enum() -> None:
+    _require_posix_niceness_at_most(POSIX_PRIORITY_NICE)
     if sys.platform == "win32":
         script = windows_priority_class_script()
         process = RunningProcess([sys.executable, "-c", script], nice=CpuPriority.LOW)
@@ -151,10 +173,10 @@ def test_running_process_accepts_platform_neutral_priority_enum() -> None:
 
     process = RunningProcess(
         [sys.executable, "-c", "import os; print(os.nice(0))"],
-        nice=CpuPriority.LOW,
+        nice=POSIX_PRIORITY,
     )
     process.wait()
-    assert int(process.stdout) >= 5
+    assert int(process.stdout) == POSIX_PRIORITY_NICE
 
 
 def test_running_process_rejects_invalid_nice_type() -> None:

@@ -674,6 +674,13 @@ fn captured_output_can_be_cleared_to_release_memory() {
     assert_eq!(process.captured_combined_bytes(), 0);
 }
 
+// The nice tests request the maximum, 19, so the spawn only ever raises
+// niceness. A lower value needs CAP_SYS_NICE when the test itself runs above it
+// (a bosn replay on a host whose daemon runs SCHED_IDLE at nice 10), and the
+// spawn then fails with EACCES.
+#[cfg(not(windows))]
+const MAX_NICE: i32 = 19;
+
 #[test]
 #[cfg(not(windows))]
 fn applies_positive_nice_before_exec() {
@@ -686,7 +693,7 @@ fn applies_positive_nice_before_exec() {
             ]),
             true,
             StdinMode::Inherit,
-            Some(5),
+            Some(MAX_NICE),
         )
     });
 
@@ -698,7 +705,7 @@ fn applies_positive_nice_before_exec() {
         .unwrap()
         .parse::<i32>()
         .unwrap();
-    assert!(observed >= 5);
+    assert_eq!(observed, MAX_NICE);
 }
 
 #[cfg(unix)]
@@ -713,7 +720,7 @@ fn bounded_std_command_applies_positive_nice_before_exec() {
         4096,
         BoundedRunOptions::default()
             .kill_when_owner_dies(false)
-            .nice(Some(5)),
+            .nice(Some(MAX_NICE)),
     )
     .unwrap();
 
@@ -723,7 +730,7 @@ fn bounded_std_command_applies_positive_nice_before_exec() {
         .trim()
         .parse::<i32>()
         .unwrap();
-    assert!(observed >= 5);
+    assert_eq!(observed, MAX_NICE);
 }
 
 // ── Error path tests ──

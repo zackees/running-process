@@ -5,12 +5,22 @@ It never runs product tests on the developer host and never stamps a commit.
 Only a clean native Linux x64 run with every required step completed can pass.
 The existing quick dispatch runs before PR attestation verification can enforce
 the proof this local execution is about to produce.
+
+Lint never runs under bosn; soldr lint only. The replayed preflight holds no
+lint step or job, and the proof rejects a receipt with any job beyond the
+required ones. ``--lane lint`` is the host lint lane, and ci.yml's ``lint`` job
+runs the same command: ``soldr lint rust --check --cross-dylint`` (Clippy for
+the host and every target Cargo.toml declares, and the dylint.toml library on
+each), ``soldr cargo fmt --all -- --check``, the platform-boundary Dylint, the
+two Dylint fixture suites, and ``ci.lint --no-rust`` (the repository's Python
+guards, contracts and Ruff).
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import os
 import platform
 import re
 import subprocess
@@ -25,6 +35,20 @@ ROOT = Path(__file__).resolve().parents[1]
 CI_LINT_REF = "86b63937960d00655f7ef3752ef6f15b6b06f35b"
 WORKFLOW = ".github/workflows/ci.yml"
 SELECTED_JOB = "linux-quick"
+# The bosn replay's deadline. A loaded shared host can need longer than the
+# default to build the preflight, so the gate operator may raise it; it only
+# bounds the wait and never changes what the replay must prove.
+DEADLINE_ENV = "RUNNING_PROCESS_GATE_DEADLINE_SECS"
+DEFAULT_DEADLINE_SECS = 3600
+
+
+def deadline_secs() -> int:
+    raw = os.environ.get(DEADLINE_ENV, "").strip()
+    if not raw:
+        return DEFAULT_DEADLINE_SECS
+    if not raw.isdigit() or int(raw) <= 0:
+        raise ValueError(f"{DEADLINE_ENV} must be a positive number of seconds, got {raw!r}")
+    return int(raw)
 
 
 @dataclass(frozen=True)
@@ -40,7 +64,6 @@ REQUIRED_JOBS = (
         (
             "cargo build (workspace + all-targets, debug, --features client)",
             "Dev wheel build",
-            "Lint",
             "Record kernel substrate timing",
             "Async semantic capture contract (kernel substrate)",
             "Direct backend identity contract",
@@ -53,16 +76,11 @@ REQUIRED_JOBS = (
             "Broker Hello perf guard",
         ),
     ),
-    RequiredJob(
-        "dylint",
-        (
-            "Dylint negative fixture",
-            "Dylint platform-boundary fixture",
-            "Dylint workspace gate",
-        ),
-    ),
-    RequiredJob("lint-gates", ("Require preflight and requested Dylint to have passed",)),
 )
+# Lint never runs under bosn: a receipt naming a lint step is rejected.
+LINT_STEP_WORDS = frozenset({"lint", "dylint", "clippy", "rustfmt"})
+NIGHTLY = "nightly-2026-08-15"
+LINT_FIXTURES = ("lints/running-process-env-literal", "lints/running-process-platform-boundary")
 
 
 @dataclass(frozen=True)
@@ -171,6 +189,11 @@ def _jobs_error(jobs: tuple[Job, ...]) -> str | None:
     expected_ids = {job.job_id for job in REQUIRED_JOBS}
     if len(jobs) != len(expected_ids) or {job.job_id for job in jobs} != expected_ids:
         return "missing, duplicate or unexpected Bosn jobs"
+    for job in jobs:
+        for section in job.sections:
+            words = set(re.split(r"[^a-z0-9]+", section.name.lower()))
+            if words & LINT_STEP_WORDS and section.conclusion != "skipped":
+                return f"Bosn executed a lint step in {job.job_id}; lint runs on the host"
     for required in REQUIRED_JOBS:
         job = next(job for job in jobs if job.job_id == required.job_id)
         if job.status != "completed" or job.conclusion != "success":
@@ -249,6 +272,7 @@ def _static_checks() -> None:
 
 
 def command() -> list[str]:
+    deadline = deadline_secs()
     return [
         "bosn",
         "ci",
@@ -266,19 +290,99 @@ def command() -> list[str]:
         "--mode",
         "minimal",
         "--timeout-secs",
-        "3600",
+        str(deadline),
         "--wait",
         "--deadline-ms",
-        "3600000",
+        str(deadline * 1000),
         "--json",
     ]
 
 
+def lint_commands() -> list[tuple[list[str], Path]]:
+    """The host lint lane: everything the replay skips, never under bosn."""
+    fixtures = [
+        (["soldr", "cargo", f"+{NIGHTLY}", "test", "--locked"], ROOT / crate)
+        for crate in LINT_FIXTURES
+    ]
+    return [
+        (["soldr", "lint", "rust", "--check", "--cross-dylint"], ROOT),
+        (["soldr", "cargo", "fmt", "--all", "--", "--check"], ROOT),
+        (
+            [
+                "soldr",
+                "dylint",
+                "--all",
+                "--path",
+                "lints",
+                "--pattern",
+                "running-process-platform-boundary",
+                "--workspace",
+            ],
+            ROOT,
+        ),
+        *fixtures,
+        (["uv", "sync", "--no-editable"], ROOT),
+        (["uv", "run", "--no-sync", "--no-editable", "-m", "ci.lint", "--no-rust"], ROOT),
+    ]
+
+
+def lint_env() -> dict[str, str]:
+    """The CI `dylint` job's environment (and ci/dylint_gate.py's)."""
+    return {
+        **os.environ,
+        "SOLDR_DYLINT_TOOLCHAIN": NIGHTLY,
+        "SOLDR_DYLINT_DRIVER_FALLBACK": "off",
+        # The lint crates select dylint-link through cfg(all()) (soldr#3483).
+        "SOLDR_LINKER": "default",
+        "RUNNING_PROCESS_REQUIRE_DYLINT": "1",
+    }
+
+
+def run_lint_lane() -> int:
+    try:
+        head = _head()
+    except ValueError as error:
+        print(f"local gate: {error}")
+        return 1
+    env = lint_env()
+    for argv, cwd in lint_commands():
+        print(f"local gate lint: {' '.join(argv)}", flush=True)
+        lane_env = env
+        if argv[:2] == ["soldr", "lint"]:
+            # soldr lint takes the Dylint nightly from the lint crates' own
+            # rust-toolchain.toml; an inherited SOLDR_DYLINT_TOOLCHAIN would
+            # also move its Clippy step onto that nightly.
+            lane_env = {k: v for k, v in env.items() if k != "SOLDR_DYLINT_TOOLCHAIN"}
+        if cwd != ROOT:
+            # Linked fixtures get their own target dir, as in CI.
+            lane_env = {
+                **env,
+                "CARGO_BIN": "cargo",
+                "CARGO_TARGET_DIR": str(ROOT / "target" / "dylint-fixtures"),
+            }
+        if subprocess.run(argv, cwd=cwd, env=lane_env, check=False).returncode:
+            print(f"local gate: lint failed: {' '.join(argv)}")
+            return 1
+    try:
+        if _head() != head:
+            raise ValueError("source changed while the lint lane ran")
+    except ValueError as error:
+        print(f"local gate: {error}")
+        return 1
+    print("local gate: host lint (soldr lint) passed")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--lane", choices=("linux-quick",), default="linux-quick")
+    parser.add_argument("--lane", choices=("linux-quick", "lint"), default="linux-quick")
     parser.add_argument("--list", action="store_true")
     args = parser.parse_args(argv)
+    if args.lane == "lint":
+        if args.list:
+            print("\n".join(" ".join(argv) for argv, _ in lint_commands()))
+            return 0
+        return run_lint_lane()
     if args.list:
         print(" ".join(command()))
         return 0

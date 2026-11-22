@@ -48,6 +48,51 @@ class LocalGateProofTests(unittest.TestCase):
         self.document["event"] = "workflow_dispatch"
         self.assertIsNone(self.error())
 
+    def test_replay_deadline_defaults_to_an_hour_and_can_be_raised(self) -> None:
+        def deadline(command: list[str]) -> tuple[str, str]:
+            return (
+                command[command.index("--timeout-secs") + 1],
+                command[command.index("--deadline-ms") + 1],
+            )
+
+        with patch.dict(local_gate.os.environ, {local_gate.DEADLINE_ENV: ""}):
+            self.assertEqual(deadline(local_gate.command()), ("3600", "3600000"))
+        with patch.dict(local_gate.os.environ, {local_gate.DEADLINE_ENV: "10800"}):
+            self.assertEqual(deadline(local_gate.command()), ("10800", "10800000"))
+        for bad in ("0", "-5", "soon"):
+            with (
+                patch.dict(local_gate.os.environ, {local_gate.DEADLINE_ENV: bad}),
+                self.assertRaises(ValueError),
+            ):
+                local_gate.command()
+
+    def test_replay_leaves_lint_to_the_host_lane(self) -> None:
+        """Lint never runs under bosn; soldr lint only."""
+        tree = local_gate.document(self.document["tree"])
+        group = local_gate.document(local_gate.values(tree["groups"])[0])
+        jobs = [local_gate.document(job) for job in local_gate.values(group["jobs"])]
+        preflight = next(job for job in jobs if job["job_id"] == "preflight")
+        sections = local_gate.values(preflight["sections"])
+        # A lint job or an executed lint step in the replay rejects the receipt.
+        group["jobs"] = [*jobs, {**preflight, "job_id": "dylint"}]
+        self.assertIsNotNone(self.error())
+        group["jobs"] = jobs
+        lint = {**local_gate.document(sections[0]), "name": "Lint"}
+        preflight["sections"] = [*sections, lint]
+        self.assertIsNotNone(self.error())
+        lint["conclusion"] = "skipped"
+        self.assertIsNone(self.error())
+        # The replayed reusable preflight holds no lint at all.
+        reusable = (local_gate.ROOT / ".github/workflows/ci-preflight.yml").read_text()
+        for word in ("dylint", "--module ci.lint", "lint-gates", "clippy", "cargo fmt"):
+            self.assertNotIn(word, reusable)
+
+    def test_lint_lane_runs_soldr_lint_on_the_host(self) -> None:
+        commands = [argv for argv, _ in local_gate.lint_commands()]
+        self.assertEqual(commands[0], ["soldr", "lint", "rust", "--check", "--cross-dylint"])
+        self.assertIn("--no-rust", commands[-1])
+        self.assertFalse(any(argv[0] == "bosn" for argv in commands))
+
     def test_posix_receipt_workspace_counts_as_located_on_every_host(self) -> None:
         # The receipt comes from a Linux container; Windows pathlib reports
         # `/work/repo` as not absolute (no drive), which failed every real

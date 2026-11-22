@@ -3,6 +3,9 @@
 # The helper replays the actual Linux quick workflow through published Bosn.
 # No product tests run on the developer host; exact source and executed steps
 # are required before the outer ci-lint command stamps an attestation.
+# Lint never runs under bosn; soldr lint only: the replayed preflight holds no
+# lint step or job, and the `lint` lane lints on the host through `soldr lint`.
+# ci.yml's `lint` job runs that same lane command, and the lane attests it.
 [gate]
 run = ["uv", "run", "--no-project", "--python", "3.11", "python", "ci/local_gate.py"]
 verify = "ci.yml:ci-mode"
@@ -16,10 +19,18 @@ run = ["uv", "run", "--no-project", "--python", "3.11", "python", "ci/local_gate
 tools = ["bosn", "docker"]
 # No exclusions until input-reuse evidence proves them safe.
 
+# rustfmt, Clippy for the host and every declared target and the Dylint
+# libraries (`soldr lint rust --check --cross-dylint`), the Dylint fixture
+# suites, and ci.lint's Python guards, contracts and Ruff. On the host, never
+# in bosn.
+[gate.lanes.lint]
+run = ["uv", "run", "--no-project", "--python", "3.11", "python", "ci/local_gate.py", "--lane", "lint"]
+tools = ["soldr", "uv"]
+
 [gate.trust]
 mode = "enforce"
-skip = ["ci.yml:linux-quick"]
-covered-by = { "ci.yml:linux-quick" = ["linux-quick"] }
+skip = ["ci.yml:linux-quick", "ci.yml:lint"]
+covered-by = { "ci.yml:linux-quick" = ["linux-quick"], "ci.yml:lint" = ["lint"] }
 surfaces = ["ci/**", "lints/**", ".config/nextest.toml", "Cargo.lock", "rust-toolchain.toml", "bosn.toml"]
 full-labels = ["ci-full", "ci-integration"]
 audit-rate = 10

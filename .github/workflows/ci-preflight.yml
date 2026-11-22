@@ -2,8 +2,10 @@ name: CI Preflight (Reusable)
 
 # Consolidated per-platform preflight (#513 follow-up): ONE job per
 # platform that builds the workspace + dev wheel exactly once, then
-# runs lint → unit tests → integration tests → rustdoc sequentially
-# against that single build.
+# runs unit tests → integration tests → rustdoc sequentially
+# against that single build. Lint never runs here (it is the top-level
+# ci.yml `lint` job, on the host through `soldr lint`): the local gate replays
+# this workflow through bosn, and lint never runs under bosn.
 #
 # Previous shape was warm-then-fan-out: a warm job populated a shared
 # target/ cache and 3-4 sub-worker jobs each restored it — but every
@@ -43,10 +45,6 @@ on:
         description: Run the integration-test steps.
         type: boolean
         default: true
-      dylint:
-        description: Run both workspace Dylints (Linux x86 on every PR; macOS/Windows x86 on their opt-in tiers).
-        type: boolean
-        default: false
       cache-key-suffix:
         description: Stable cache family name for this lane.
         type: string
@@ -153,19 +151,13 @@ jobs:
         # crates built here are reused instead of rebuilt.
         run: soldr cargo build --workspace --all-targets --exclude running-process-py --features client,running-process/async-process,running-process/originator-scan,running-process/probe,running-process/pty
 
-      # ci.lint and ci.test import `running_process` at runtime, so the
+      # ci.test imports `running_process` at runtime, so the
       # dev wheel must be installed in the venv. Cargo compile replays
       # from the build above, so this is mostly maturin packaging cost —
       # and it happens once, not once per sub-worker.
       - name: Dev wheel build
         id: build
         run: uv run --no-sync --module ci.run_logged logs/dev-build.log -- uv run --no-sync --module ci.build_wheel --dev
-
-      - name: Lint
-        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
-        env:
-          RUNNING_PROCESS_LINT_COMMAND_TIMEOUT_SECONDS: "300"
-        run: uv run --no-sync --module ci.run_logged logs/lint.log -- uv run --no-sync --module ci.lint
 
       - name: Record kernel substrate timing
         if: ${{ inputs.label == 'linux-x86' }}
@@ -347,112 +339,3 @@ jobs:
           name: terminal-capabilities-${{ inputs.label }}
           path: logs/terminal-capabilities/${{ inputs.label }}/*
           if-no-files-found: warn
-
-  # Dylint runs in its own job, in parallel with preflight: it builds into its
-  # own ephemeral target dir and a separate compiler-unit cache family.
-  # Keep it off the preflight critical path without saving linked fixtures.
-  dylint:
-    name: dylint (${{ inputs.label }})
-    if: ${{ inputs.dylint }}
-    runs-on: ${{ inputs.os }}
-    # Windows x86 with a cold compiler-unit cache spent 20-30 min in each of
-    # the two workspace passes (2026-10-26, PR #1337: 50 min once, over 60
-    # the next time), and that cache is saved only from main, so a PR lane is
-    # always cold. 30 and then 60 cancelled the second pass.
-    timeout-minutes: 120
-    env:
-      SOLDR_DYLINT_DRIVER_FALLBACK: "off"
-      # The lint crates select dylint-link through cfg(all()). Soldr's
-      # automatic linker only detects exact-triple Cargo config entries;
-      # keep the declared linker so it emits Dylint's qualified library name.
-      SOLDR_LINKER: "default"
-    # Keep fixture and managed-tool commands consistent across existing lanes.
-    defaults:
-      run:
-        shell: bash
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Set up managed Dylint tools and compiler cache
-        uses: zackees/setup-soldr@v0
-        env:
-          SOLDR_S3_CACHE_ACCESS_KEY: ${{ secrets.SOLDR_S3_CACHE_ACCESS_KEY }}
-          SOLDR_S3_CACHE_SECRET_KEY: ${{ secrets.SOLDR_S3_CACHE_SECRET_KEY }}
-          SOLDR_DYLINT_DRIVER_FALLBACK: "off"
-        with:
-          cache: true
-          s3-bucket: forge-ci-cache
-          s3-endpoint: sfo3.digitaloceanspaces.com
-          ci-tests: true
-          job-status: ${{ job.status }}
-          save-cache: auto
-          save-cache-remote: ${{ github.ref == 'refs/heads/main' && 'auto' || 'false' }}
-          cache-key-suffix: dylint-${{ inputs.label }}
-          # Dylint embeds template.tar from its registry source; the current
-          # registry payload omits that asset. Keep compiler-unit reuse only.
-          cargo-registry-cache: false
-          prebuild-deps: none
-          dylint: true
-          dylint-toolchain: nightly-2026-08-15
-          cargo-dylint-version: "6.2.0"
-          dylint-link-version: "6.2.0"
-          dylint-output-cache: false
-
-      # The fixture tests and `cargo dylint` build the same dependencies, but
-      # cargo-dylint links with `dylint-link`, and the linker is part of cargo's
-      # fingerprint. Sharing one target dir made each side rebuild ~80 crates
-      # every run (the saved cache held only the gate's state). The fixtures
-      # get their own ephemeral subdirectory; linked fixtures are never cached.
-      - name: Dylint negative fixture
-        if: ${{ inputs.dylint }}
-        working-directory: lints/running-process-env-literal
-        env:
-          CARGO_BIN: cargo
-          CARGO_TARGET_DIR: ${{ runner.temp }}/running-process-dylint-target/fixtures
-        run: soldr cargo +nightly-2026-08-15 test --locked
-
-      - name: Dylint platform-boundary fixture
-        if: ${{ inputs.dylint }}
-        # Run from the lint crate so its .cargo/config.toml (linker =
-        # dylint-link) applies, exactly as the negative fixture's does. With
-        # --manifest-path from the repo root the default linker was used; the
-        # linker is in cargo's fingerprint, so the two fixtures rebuilt ~99
-        # shared crates every run.
-        working-directory: lints/running-process-platform-boundary
-        env:
-          CARGO_BIN: cargo
-          CARGO_TARGET_DIR: ${{ runner.temp }}/running-process-dylint-target/fixtures
-        run: soldr cargo +nightly-2026-08-15 test --locked
-
-      - name: Dylint workspace gate
-        if: ${{ inputs.dylint }}
-        env:
-          CARGO_BIN: cargo
-          CARGO_TARGET_DIR: ${{ runner.temp }}/running-process-dylint-target
-        run: |
-          soldr dylint --all --workspace
-          soldr dylint --all --path lints --pattern running-process-platform-boundary --workspace
-
-
-  # One required check for the lint lanes. `dylint` is skipped when a caller
-  # does not request it, which is fine; but if it was requested it must have
-  # run and passed, and a failed or cancelled preflight must never read green
-  # just because a sibling job was skipped.
-  lint-gates:
-    name: lint gates (${{ inputs.label }})
-    if: ${{ always() }}
-    needs: [preflight, dylint]
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    steps:
-      - name: Require preflight and requested Dylint to have passed
-        env:
-          PREFLIGHT: ${{ needs.preflight.result }}
-          DYLINT: ${{ needs.dylint.result }}
-          DYLINT_REQUESTED: ${{ inputs.dylint }}
-        run: |
-          echo "preflight=$PREFLIGHT dylint=$DYLINT requested=$DYLINT_REQUESTED"
-          [ "$PREFLIGHT" = success ] || exit 1
-          if [ "$DYLINT_REQUESTED" = true ]; then
-            [ "$DYLINT" = success ] || exit 1
-          fi

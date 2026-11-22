@@ -43,6 +43,21 @@ fn run_crasher(spool: &Path, extra: &[&str], opt_out: bool) -> Output {
     command.output().expect("spawn crash fixture")
 }
 
+/// zackees/running-process#1373: under a bosn (act) replay on a loaded shared
+/// host, these crash-handler tests sometimes find no record in the crash spool.
+/// act sets `ACT` in every replayed job and GitHub-hosted runners never do, so
+/// hosted CI still runs them.
+fn quarantined_under_bosn_replay(test: &str) -> bool {
+    if std::env::var_os("ACT").is_none() {
+        return false;
+    }
+    eprintln!(
+        "skipping {test} under a bosn/act replay (ACT is set): \
+         https://github.com/zackees/running-process/issues/1373"
+    );
+    true
+}
+
 fn only_report(spool: &Path) -> RawCrashReport {
     let entries = std::fs::read_dir(spool)
         .expect("spool dir")
@@ -60,6 +75,9 @@ fn only_report(spool: &Path) -> RawCrashReport {
 
 #[test]
 fn crash_capture_produces_app_tagged_all_thread_raw_report() {
+    if quarantined_under_bosn_replay("crash_capture_produces_app_tagged_all_thread_raw_report") {
+        return;
+    }
     let temp = tempfile::tempdir().unwrap();
     let output = run_crasher(temp.path(), &["--mode", "segv", "--stress"], false);
     assert!(
@@ -97,6 +115,9 @@ fn crash_capture_produces_app_tagged_all_thread_raw_report() {
 
 #[test]
 fn dropping_metadata_owner_retags_an_immediate_fault() {
+    if quarantined_under_bosn_replay("dropping_metadata_owner_retags_an_immediate_fault") {
+        return;
+    }
     let temp = tempfile::tempdir().unwrap();
     let output = run_crasher(
         temp.path(),
@@ -113,6 +134,9 @@ fn dropping_metadata_owner_retags_an_immediate_fault() {
 
 #[test]
 fn prior_native_handler_still_runs_after_probe_callback() {
+    if quarantined_under_bosn_replay("prior_native_handler_still_runs_after_probe_callback") {
+        return;
+    }
     let temp = tempfile::tempdir().unwrap();
     let spool = temp.path().join("spool");
     let sentinel = temp.path().join("prior-ran");
@@ -177,6 +201,11 @@ fn environment_opt_out_touches_no_crash_sink() {
 
 #[test]
 fn allocator_pressure_does_not_deadlock_or_truncate_handler_write() {
+    if quarantined_under_bosn_replay(
+        "allocator_pressure_does_not_deadlock_or_truncate_handler_write",
+    ) {
+        return;
+    }
     for attempt in 0..3 {
         let temp = tempfile::tempdir().unwrap();
         let output = run_crasher(temp.path(), &["--mode", "segv", "--stress"], false);

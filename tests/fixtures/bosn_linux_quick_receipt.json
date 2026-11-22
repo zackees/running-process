@@ -17,44 +17,6 @@
       {
         "jobs": [
           {
-            "job_id": "dylint",
-            "status": "completed",
-            "conclusion": "success",
-            "sections": [
-              {
-                "name": "Dylint negative fixture",
-                "stage": "Main",
-                "status": "completed",
-                "conclusion": "success"
-              },
-              {
-                "name": "Dylint platform-boundary fixture",
-                "stage": "Main",
-                "status": "completed",
-                "conclusion": "success"
-              },
-              {
-                "name": "Dylint workspace gate",
-                "stage": "Main",
-                "status": "completed",
-                "conclusion": "success"
-              }
-            ]
-          },
-          {
-            "job_id": "lint-gates",
-            "status": "completed",
-            "conclusion": "success",
-            "sections": [
-              {
-                "name": "Require preflight and requested Dylint to have passed",
-                "stage": "Main",
-                "status": "completed",
-                "conclusion": "success"
-              }
-            ]
-          },
-          {
             "job_id": "preflight",
             "status": "completed",
             "conclusion": "success",
@@ -67,12 +29,6 @@
               },
               {
                 "name": "Dev wheel build",
-                "stage": "Main",
-                "status": "completed",
-                "conclusion": "success"
-              },
-              {
-                "name": "Lint",
                 "stage": "Main",
                 "status": "completed",
                 "conclusion": "success"
