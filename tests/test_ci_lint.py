@@ -2,48 +2,42 @@ from __future__ import annotations
 
 from ci import lint as ci_lint
 
-DYLINT_LANES = {"linux-x86", "macos-x86", "windows-x86"}
+WORKFLOWS = ci_lint.ROOT / ".github" / "workflows"
+CROSS_TARGETS = {
+    "x86_64-pc-windows-msvc",
+    "aarch64-pc-windows-msvc",
+    "x86_64-apple-darwin",
+    "aarch64-apple-darwin",
+    "aarch64-unknown-linux-gnu",
+}
 
 
-def test_native_x86_preflights_gate_both_workspace_dylints() -> None:
-    workflows = ci_lint.ROOT / ".github" / "workflows"
-    reusable = (workflows / "ci-preflight.yml").read_text(encoding="utf-8")
-    assert "dylint --all --workspace" in reusable
-    assert "--pattern running-process-platform-boundary" in reusable
-    labels = {
-        "ci-linux.yml": ("linux-x86", "linux-arm"),
-        "ci-macos.yml": ("macos-x86", "macos-arm"),
-        "ci-windows.yml": ("windows-x86", "windows-arm"),
-    }
-    for name, names in labels.items():
-        source = (workflows / name).read_text(encoding="utf-8")
-        for label in names:
-            job = source.split(f"label: {label}", 1)[1].split("\n\n", 1)[0]
-            assert ("dylint: true" in job) == (label in DYLINT_LANES), (name, label)
+def test_lint_is_one_linux_job_running_the_host_lint_lane() -> None:
+    """Lint never runs under bosn; soldr lint only. The reusable preflight the
+    gate replays holds no lint; ci.yml's `lint` job runs the host lane, which
+    cross-lints every platform the per-platform preflights used to lint."""
+    import tomllib
 
+    from ci import local_gate
 
-def test_dylint_job_uses_bash_so_windows_can_run_its_posix_steps() -> None:
-    reusable = (ci_lint.ROOT / ".github" / "workflows" / "ci-preflight.yml").read_text(
-        encoding="utf-8"
-    )
-    job = reusable.split("\n  dylint:\n", 1)[1].split("\n  lint-gates:\n", 1)[0]
-    assert "defaults:\n      run:\n        shell: bash" in job
-    # Managed setup resolves platform-specific binaries, including Windows
-    # .exe suffixes; the repository no longer copies a manual tool cache.
+    reusable = (WORKFLOWS / "ci-preflight.yml").read_text(encoding="utf-8")
+    for word in ("dylint", "--module ci.lint", "lint-gates", "inputs.lint"):
+        assert word not in reusable, word
+    main = (WORKFLOWS / "ci.yml").read_text(encoding="utf-8")
+    job = main.split("\n  lint:\n", 1)[1].split("\n\n  linux-full:\n", 1)[0]
+    assert "runs-on: ubuntu-24.04" in job
+    assert "python ci/local_gate.py --lane lint" in job
+    assert "needs.ci-mode.outputs.skip_lint != 'true'" in job
     assert "uses: zackees/setup-soldr@v0" in job
     assert 'cargo-dylint-version: "6.2.0"' in job
     assert 'dylint-link-version: "6.2.0"' in job
-
-
-def test_aggregate_check_fails_when_a_requested_dylint_did_not_pass() -> None:
-    reusable = (ci_lint.ROOT / ".github" / "workflows" / "ci-preflight.yml").read_text(
-        encoding="utf-8"
-    )
-    gate = reusable.split("\n  lint-gates:\n", 1)[1]
-    assert "if: ${{ always() }}" in gate
-    assert "needs: [preflight, dylint]" in gate
-    assert '[ "$PREFLIGHT" = success ] || exit 1' in gate
-    assert '[ "$DYLINT" = success ] || exit 1' in gate
+    commands = [argv for argv, _ in local_gate.lint_commands()]
+    assert commands[0] == ["soldr", "lint", "rust", "--check", "--cross-dylint"]
+    assert any("running-process-platform-boundary" in argv for argv in commands)
+    cargo = tomllib.loads((ci_lint.ROOT / "Cargo.toml").read_text(encoding="utf-8"))
+    assert set(cargo["workspace"]["metadata"]["soldr"]["targets"]) == CROSS_TARGETS
+    for name in ("ci-linux.yml", "ci-macos.yml", "ci-windows.yml"):
+        assert "dylint" not in (WORKFLOWS / name).read_text(encoding="utf-8"), name
 
 
 def test_default_pr_path_does_not_run_macos_or_windows_dylint() -> None:
@@ -66,11 +60,9 @@ def test_local_lint_runs_both_dylint_libraries_in_ci_order() -> None:
     assert first[:2] == prefix
     assert second[:2] == prefix
     assert "--all" in second
-    reusable = (ci_lint.ROOT / ".github" / "workflows" / "ci-preflight.yml").read_text(
-        encoding="utf-8"
-    )
-    assert dylint_gate.NIGHTLY in reusable
-    assert f'cargo-dylint-version: "{dylint_gate.DYLINT_VERSION}"' in reusable
+    main = (WORKFLOWS / "ci.yml").read_text(encoding="utf-8")
+    assert dylint_gate.NIGHTLY in main
+    assert f'cargo-dylint-version: "{dylint_gate.DYLINT_VERSION}"' in main
 
 
 def test_dylint_gate_skips_without_toolchain_and_fails_when_required(monkeypatch, capsys) -> None:

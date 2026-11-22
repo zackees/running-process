@@ -6,13 +6,14 @@ Only a clean native Linux x64 run with every required step completed can pass.
 The existing quick dispatch runs before PR attestation verification can enforce
 the proof this local execution is about to produce.
 
-Lint never runs under bosn; soldr lint only. The replay dispatches with
-``host_lint=true``, which skips the preflight ``Lint`` step and the ``dylint``
-job, and the proof rejects a receipt in which either executed. ``--lane lint``
-runs that lint on the host: ``soldr lint rust --check`` (Clippy and the
-dylint.toml library), ``soldr cargo fmt --all -- --check``, the
-platform-boundary Dylint, the two Dylint fixture suites, and
-``ci.lint --no-rust`` (the repository's Python guards, contracts and Ruff).
+Lint never runs under bosn; soldr lint only. The replayed preflight holds no
+lint step or job, and the proof rejects a receipt with any job beyond the
+required ones. ``--lane lint`` is the host lint lane, and ci.yml's ``lint`` job
+runs the same command: ``soldr lint rust --check --cross-dylint`` (Clippy for
+the host and every target Cargo.toml declares, and the dylint.toml library on
+each), ``soldr cargo fmt --all -- --check``, the platform-boundary Dylint, the
+two Dylint fixture suites, and ``ci.lint --no-rust`` (the repository's Python
+guards, contracts and Ruff).
 """
 
 from __future__ import annotations
@@ -61,13 +62,9 @@ REQUIRED_JOBS = (
             "Broker Hello perf guard",
         ),
     ),
-    RequiredJob("lint-gates", ("Require preflight and requested Dylint to have passed",)),
 )
-# Lint never runs under bosn: with host_lint=true these must not execute. The
-# `dylint` job may be reported skipped or omitted; preflight's `Lint` step may
-# be reported skipped or omitted. Either one executing rejects the receipt.
-SKIPPED_JOBS = frozenset({"dylint"})
-SKIPPED_STEPS = {"preflight": frozenset({"Lint"})}
+# Lint never runs under bosn: a receipt naming a lint step is rejected.
+LINT_STEP_WORDS = frozenset({"lint", "dylint", "clippy", "rustfmt"})
 NIGHTLY = "nightly-2026-08-15"
 LINT_FIXTURES = ("lints/running-process-env-literal", "lints/running-process-platform-boundary")
 
@@ -176,22 +173,13 @@ def _parse_proof(output: str) -> Proof:
 
 def _jobs_error(jobs: tuple[Job, ...]) -> str | None:
     expected_ids = {job.job_id for job in REQUIRED_JOBS}
-    for skipped in SKIPPED_JOBS:
-        if sum(job.job_id == skipped for job in jobs) > 1:
-            return "missing, duplicate or unexpected Bosn jobs"
-    for job in jobs:
-        if job.job_id in SKIPPED_JOBS:
-            if job.conclusion != "skipped" or any(
-                section.conclusion != "skipped" for section in job.sections
-            ):
-                return f"Bosn executed lint job {job.job_id}; lint runs on the host"
-    jobs = tuple(job for job in jobs if job.job_id not in SKIPPED_JOBS)
     if len(jobs) != len(expected_ids) or {job.job_id for job in jobs} != expected_ids:
         return "missing, duplicate or unexpected Bosn jobs"
     for job in jobs:
-        lint_steps = SKIPPED_STEPS.get(job.job_id, frozenset())
-        if any(s.name in lint_steps and s.conclusion != "skipped" for s in job.sections):
-            return f"Bosn executed a lint step in {job.job_id}; lint runs on the host"
+        for section in job.sections:
+            words = set(re.split(r"[^a-z0-9]+", section.name.lower()))
+            if words & LINT_STEP_WORDS and section.conclusion != "skipped":
+                return f"Bosn executed a lint step in {job.job_id}; lint runs on the host"
     for required in REQUIRED_JOBS:
         job = next(job for job in jobs if job.job_id == required.job_id)
         if job.status != "completed" or job.conclusion != "success":
@@ -284,8 +272,6 @@ def command() -> list[str]:
         "workflow_dispatch",
         "--input",
         "full=false",
-        "--input",
-        "host_lint=true",
         "--mode",
         "minimal",
         "--timeout-secs",
@@ -304,7 +290,7 @@ def lint_commands() -> list[tuple[list[str], Path]]:
         for crate in LINT_FIXTURES
     ]
     return [
-        (["soldr", "lint", "rust", "--check"], ROOT),
+        (["soldr", "lint", "rust", "--check", "--cross-dylint"], ROOT),
         (["soldr", "cargo", "fmt", "--all", "--", "--check"], ROOT),
         (
             [

@@ -3,12 +3,15 @@
 # Enforced proof skips the covered quick job; audit samples still run remotely.
 version: 1
 gates:
-  rust/all/fmt: {lane: linux-quick, fidelity: native}
-  python/all/static: {lane: linux-quick, fidelity: native}
+  # Lint never runs under bosn; soldr lint only: the host `lint` lane.
+  rust/all/fmt: {lane: lint, fidelity: native}
+  python/all/static: {lane: lint, fidelity: native}
+  rust/all/clippy: {lane: lint, fidelity: native}
+  rust/all/dylint: {lane: lint, fidelity: native}
   rust/x86_64-unknown-linux-gnu/check: {lane: linux-quick, fidelity: native}
-  rust/x86_64-unknown-linux-gnu/dylint: {lane: linux-quick, fidelity: native}
   rust/x86_64-unknown-linux-gnu/test: {lane: linux-quick, fidelity: native}
   python/linux-x64/test: {lane: linux-quick, fidelity: native}
   general/linux-x64/perf: {lane: linux-quick, fidelity: native}
 jobs:
-  ci.yml:linux-quick: [rust/all/fmt, python/all/static, rust/x86_64-unknown-linux-gnu/check, rust/x86_64-unknown-linux-gnu/dylint, rust/x86_64-unknown-linux-gnu/test, python/linux-x64/test, general/linux-x64/perf]
+  ci.yml:linux-quick: [rust/x86_64-unknown-linux-gnu/check, rust/x86_64-unknown-linux-gnu/test, python/linux-x64/test, general/linux-x64/perf]
+  ci.yml:lint: [rust/all/fmt, python/all/static, rust/all/clippy, rust/all/dylint]

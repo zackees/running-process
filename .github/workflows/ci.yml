@@ -18,15 +18,6 @@ on:
         type: boolean
         required: false
         default: false
-      # Lint never runs under bosn; soldr lint only. The local gate replays
-      # linux-quick through bosn with host_lint=true, which drops the Lint
-      # step and the Dylint job from the replay; its host `lint` lane
-      # (ci/local_gate.py --lane lint, `soldr lint`) runs them instead.
-      host_lint:
-        description: Lint runs on the host (local gate); skip the Lint step and Dylint job here.
-        type: boolean
-        required: false
-        default: false
 
 permissions:
   contents: read
@@ -71,6 +62,7 @@ jobs:
     outputs:
       trusted: ${{ steps.gate.outputs.trusted }}
       skip_linux-quick: ${{ steps.gate.outputs.skip_linux-quick }}
+      skip_lint: ${{ steps.gate.outputs.skip_lint }}
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
@@ -99,8 +91,59 @@ jobs:
       label: linux-x86
       rustdoc: false
       integration-test: ${{ github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'ci-integration') }}
-      dylint: ${{ !(github.event_name == 'workflow_dispatch' && inputs.host_lint) }}
-      lint: ${{ !(github.event_name == 'workflow_dispatch' && inputs.host_lint) }}
+
+  # Lint never runs under bosn; soldr lint only. One Linux job runs exactly
+  # the local gate's host `lint` lane (ci/local_gate.py --lane lint), that is
+  # `soldr lint rust --check --cross-dylint` (Clippy for the host and every
+  # target Cargo.toml declares, so Windows/macOS/arm64 cfg code is
+  # type-checked from Linux, soldr#3378, and the dylint.toml library on each),
+  # rustfmt, the platform-boundary Dylint, both Dylint fixture suites and
+  # ci.lint --no-rust. It replaces the per-platform Lint step and Dylint job
+  # the reusable preflight used to run. An attested, trusted head skips it.
+  lint:
+    needs: [ci-mode]
+    name: Lint (soldr lint, host)
+    if: ${{ needs.ci-mode.outputs.skip_lint != 'true' && github.event.action != 'labeled' && github.event.action != 'unlabeled' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    env:
+      SOLDR_DYLINT_DRIVER_FALLBACK: "off"
+      SOLDR_LINKER: "default"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - uses: astral-sh/setup-uv@v5
+
+      - name: Set up soldr with the managed Dylint tools
+        uses: zackees/setup-soldr@v0
+        env:
+          SOLDR_S3_CACHE_ACCESS_KEY: ${{ secrets.SOLDR_S3_CACHE_ACCESS_KEY }}
+          SOLDR_S3_CACHE_SECRET_KEY: ${{ secrets.SOLDR_S3_CACHE_SECRET_KEY }}
+          SOLDR_DYLINT_DRIVER_FALLBACK: "off"
+        with:
+          cache: true
+          s3-bucket: forge-ci-cache
+          s3-endpoint: sfo3.digitaloceanspaces.com
+          job-status: ${{ job.status }}
+          save-cache: auto
+          save-cache-remote: ${{ github.ref == 'refs/heads/main' && 'auto' || 'false' }}
+          cache-key-suffix: lint
+          cargo-registry-cache: false
+          prebuild-deps: none
+          dylint: true
+          dylint-toolchain: nightly-2026-08-15
+          cargo-dylint-version: "6.2.0"
+          dylint-link-version: "6.2.0"
+          dylint-output-cache: false
+
+      - name: Host lint lane (soldr lint)
+        run: uv run --no-project --python 3.11 python ci/local_gate.py --lane lint
 
   linux-full:
     needs: [ci-mode]
@@ -155,7 +198,7 @@ jobs:
   # (forge-ci/ci.yml#407).
   queue-cache-janitor:
     name: End-of-queue cache janitor
-    needs: [cancel-superseded, ci-mode, linux-quick, linux-full, macos, windows, coverage, all-features, cache-budget]
+    needs: [cancel-superseded, ci-mode, lint, linux-quick, linux-full, macos, windows, coverage, all-features, cache-budget]
     if: ${{ always() && github.event_name == 'merge_group' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 5

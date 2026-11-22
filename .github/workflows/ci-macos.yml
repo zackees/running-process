@@ -20,7 +20,6 @@ jobs:
       label: macos-x86
       rustdoc: false
       integration-test: true
-      dylint: true
 
   arm:
     uses: ./.github/workflows/ci-preflight.yml

@@ -598,14 +598,17 @@ uvx --from git+https://github.com/zackees/ci.yml@86b63937960d00655f7ef3752ef6f15
 ```
 
 The `linux-quick` lane runs the existing Linux quick workflow through Bosn's
-released act2 engine in isolation, dispatched with `host_lint=true`. It checks
-the exact committed source and completion of every required build, wheel,
-contract, Rust/Python test and performance step. Lint never runs under Bosn:
-the `lint` lane runs Clippy and Dylint through `soldr lint rust --check`
-on the host, then rustfmt, the platform-boundary Dylint, the Dylint fixture
-suites and
-`ci.lint --no-rust` (Python guards, contracts, Ruff). Both lanes must pass
-before the gate adds source-bound commit attestations.
+released act2 engine in isolation. It checks the exact committed source and
+completion of every required build, wheel, contract, Rust/Python test and
+performance step; the replayed preflight holds no lint. Lint never runs under
+Bosn: the `lint` lane runs `soldr lint rust --check --cross-dylint` on the
+host (Clippy for Linux and every target `Cargo.toml` declares, so Windows,
+macOS and arm64 cfg code is checked from Linux, plus the dylint.toml library
+on each), then rustfmt, the platform-boundary Dylint, the Dylint fixture
+suites and `ci.lint --no-rust` (Python guards, contracts, Ruff). CI's `lint`
+job runs the same lane on one Linux runner; there is no per-platform lint
+step. Both lanes must pass before the gate adds source-bound commit
+attestations.
 Push the stamped commit. An unchanged attested head can reuse its proof;
 changed inputs must pass the declared gate.
 
