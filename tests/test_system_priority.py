@@ -135,6 +135,17 @@ POSIX_PRIORITY = CpuPriority.MINIMAL
 POSIX_PRIORITY_NICE = 15
 
 
+def _require_posix_niceness_at_most(target: int) -> None:
+    """Lowering niceness needs CAP_SYS_NICE. A test process that already runs
+    nicer than `target` (a bosn replay whose daemon runs at nice 19) cannot
+    exercise this request; hosted runners start at 0."""
+    if sys.platform != "win32" and os.nice(0) > target:
+        pytest.skip(
+            f"this process already runs at nice {os.nice(0)}; "
+            f"requesting {target} would need CAP_SYS_NICE"
+        )
+
+
 def test_running_process_can_set_positive_nice() -> None:
     if sys.platform == "win32":
         script = windows_priority_class_script()
@@ -152,6 +163,7 @@ def test_running_process_can_set_positive_nice() -> None:
 
 
 def test_running_process_accepts_platform_neutral_priority_enum() -> None:
+    _require_posix_niceness_at_most(POSIX_PRIORITY_NICE)
     if sys.platform == "win32":
         script = windows_priority_class_script()
         process = RunningProcess([sys.executable, "-c", script], nice=CpuPriority.LOW)

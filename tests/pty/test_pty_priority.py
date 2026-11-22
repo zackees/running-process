@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import sys
 import tempfile
 from pathlib import Path
@@ -30,6 +31,17 @@ from tests.pty._pty_helpers import _read_until_contains
 POSIX_NICE = 19
 POSIX_PRIORITY = CpuPriority.MINIMAL
 POSIX_PRIORITY_NICE = 15
+
+
+def _require_posix_niceness_at_most(target: int) -> None:
+    """Lowering niceness needs CAP_SYS_NICE. A test process that already runs
+    nicer than `target` (a bosn replay whose daemon runs at nice 19) cannot
+    exercise this request; hosted runners start at 0."""
+    if sys.platform != "win32" and os.nice(0) > target:
+        pytest.skip(
+            f"this process already runs at nice {os.nice(0)}; "
+            f"requesting {target} would need CAP_SYS_NICE"
+        )
 
 
 def test_pseudo_terminal_can_set_positive_nice() -> None:
@@ -75,6 +87,7 @@ def test_posix_pty_command_wraps_nice_before_exec(monkeypatch: pytest.MonkeyPatc
 
 
 def test_pseudo_terminal_accepts_priority_enum() -> None:
+    _require_posix_niceness_at_most(POSIX_PRIORITY_NICE)
     process = RunningProcess.pseudo_terminal(
         [sys.executable, "-c", "import os, time; time.sleep(0.3); print(os.nice(0), flush=True)"]
         if sys.platform != "win32"
@@ -122,6 +135,7 @@ def test_interactive_can_set_positive_nice() -> None:
 
 
 def test_interactive_accepts_priority_enum() -> None:
+    _require_posix_niceness_at_most(POSIX_PRIORITY_NICE)
     with tempfile.TemporaryDirectory() as temp_dir:
         output_path = Path(temp_dir) / "nice.txt"
         if sys.platform == "win32":
