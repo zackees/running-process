@@ -199,8 +199,12 @@ async fn session_kill_and_wait_remain_responsive_while_stdin_is_blocked() {
 
 #[tokio::test]
 async fn session_cpu_sample_is_identity_bound_and_progresses_when_supported() {
+    // 19 (the maximum) so the spawn only ever raises niceness. A lower value
+    // needs CAP_SYS_NICE when the test itself runs above it (a bosn replay on
+    // a host whose daemon runs SCHED_IDLE at nice 10), and the spawn then
+    // fails with EACCES before any CPU is sampled.
     let mut session = AsyncProcessBuilder::new(testbin("testbin-session-cpu-spinner"))
-        .nice(Some(5))
+        .nice(Some(19))
         .session(options());
     session.start().await.expect("start CPU fixture");
     let before = session.cpu_time().await.expect("CPU sample request");
