@@ -1518,3 +1518,16 @@ mod host_semantics_tests {
         assert!(super::ipc_handoff_transport_available());
     }
 }
+
+/// Report whether the Linux process-group spawn attribute is available.
+pub fn apply_process_group_spawn_attribute(_command: &mut std::process::Command) -> bool {
+    false
+}
+
+/// Spawn with this target's existing process launch semantics.
+pub fn spawn_std_with_group_fallback(
+    command: &mut std::process::Command,
+    _group_spawn_attribute: bool,
+) -> std::io::Result<std::process::Child> {
+    crate::platform::ape::spawn_std(command, std::process::Command::spawn)
+}

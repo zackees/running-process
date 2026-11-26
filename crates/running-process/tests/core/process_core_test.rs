@@ -276,6 +276,74 @@ fn bounded_std_command_options_preserve_nonzero_timeout_and_output_limit_results
 
 #[cfg(target_os = "linux")]
 #[test]
+fn bounded_std_command_spawn_attribute_creates_child_group() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let working_directory = tempfile::tempdir().unwrap();
+    let script = working_directory.path().join("child-group");
+    let program = "pgid=$(ps -o pgid= -p $$ | tr -d '[:space:]'); test \"$pgid\" = \"$$\" && pwd";
+    // The second launch preserves the libc-specific ENOEXEC behavior.
+    for header in ["#!/bin/sh\n", ""] {
+        std::fs::write(&script, format!("{header}{program}")).unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let mut command = Command::new(&script);
+        command.current_dir(working_directory.path());
+        let result = run_std_command_bounded_with_options(
+            command,
+            Some(CHILD_EXIT_WAIT),
+            4096,
+            BoundedRunOptions::default().process_group_spawn_attribute(true),
+        );
+        if header.is_empty() && cfg!(target_env = "musl") {
+            assert!(matches!(
+                result,
+                Err(ProcessError::Spawn(error)) if error.raw_os_error() == Some(libc::ENOEXEC)
+            ));
+            continue;
+        }
+        let output = result.unwrap();
+        assert_eq!(output.exit_code, 0);
+        assert_eq!(
+            std::str::from_utf8(&output.stdout).unwrap().trim_end(),
+            working_directory.path().display().to_string()
+        );
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn bounded_std_command_owns_group_after_user_pre_exec() {
+    use std::os::unix::process::CommandExt;
+
+    // SAFETY: getpgrp takes no arguments and reads the current process group.
+    let inherited_group = unsafe { libc::getpgrp() };
+    let mut command = Command::new("sh");
+    command.args([
+        "-c",
+        "pgid=$(ps -o pgid= -p $$ | tr -d '[:space:]'); test \"$pgid\" = \"$$\"",
+    ]);
+    // SAFETY: the closure invokes only the async-signal-safe setpgid call.
+    unsafe {
+        command.pre_exec(move || {
+            if libc::setpgid(0, inherited_group) == -1 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+
+    let output = run_std_command_bounded_with_options(
+        command,
+        Some(CHILD_EXIT_WAIT),
+        4096,
+        BoundedRunOptions::default(),
+    )
+    .unwrap();
+    assert_eq!(output.exit_code, 0);
+}
+
+#[cfg(target_os = "linux")]
+#[test]
 fn bounded_std_command_owner_death_composes_with_user_pre_exec_and_group_policy() {
     use std::os::unix::process::CommandExt;
 
@@ -329,7 +397,8 @@ fn helper_force_killed_bounded_owner_reaps_child() {
     let mut command = Command::new("sh");
     command.args([
         "-c",
-        "echo $$ > \"$RUNNING_PROCESS_BOUNDED_OWNER_DEATH_PID_FILE\"; exec sleep 30",
+        "report=$RUNNING_PROCESS_BOUNDED_OWNER_DEATH_PID_FILE; \
+         printf '%s\\n' \"$$\" > \"$report.tmp\" && mv -- \"$report.tmp\" \"$report\" && exec sleep 30",
     ]);
     let result = run_std_command_bounded_with_options(
         command,
@@ -674,6 +743,10 @@ fn captured_output_can_be_cleared_to_release_memory() {
     assert_eq!(process.captured_combined_bytes(), 0);
 }
 
+// A Linux CI process can inherit nice 19 with no permission to raise it.
+#[cfg(not(windows))]
+const FIXTURE_NICE: i32 = if cfg!(target_os = "linux") { 19 } else { 5 };
+
 #[test]
 #[cfg(not(windows))]
 fn applies_positive_nice_before_exec() {
@@ -686,7 +759,7 @@ fn applies_positive_nice_before_exec() {
             ]),
             true,
             StdinMode::Inherit,
-            Some(5),
+            Some(FIXTURE_NICE),
         )
     });
 
@@ -698,7 +771,7 @@ fn applies_positive_nice_before_exec() {
         .unwrap()
         .parse::<i32>()
         .unwrap();
-    assert!(observed >= 5);
+    assert_eq!(observed, FIXTURE_NICE);
 }
 
 #[cfg(unix)]
@@ -713,7 +786,7 @@ fn bounded_std_command_applies_positive_nice_before_exec() {
         4096,
         BoundedRunOptions::default()
             .kill_when_owner_dies(false)
-            .nice(Some(5)),
+            .nice(Some(FIXTURE_NICE)),
     )
     .unwrap();
 
@@ -723,7 +796,7 @@ fn bounded_std_command_applies_positive_nice_before_exec() {
         .trim()
         .parse::<i32>()
         .unwrap();
-    assert!(observed >= 5);
+    assert_eq!(observed, FIXTURE_NICE);
 }
 
 // ── Error path tests ──

@@ -479,6 +479,7 @@ pub struct NativeProcess {
     // entrypoint. General NativeProcess callers keep their established
     // platform policy surface.
     kill_when_owner_dies: bool,
+    process_group_spawn_attribute: bool,
     #[cfg(test)]
     stdin_write_active: AtomicBool,
     capture_cancellation:
@@ -566,10 +567,12 @@ impl NativeProcess {
         config: ProcessConfig,
         capture_limit: usize,
         kill_when_owner_dies: bool,
+        process_group_spawn_attribute: bool,
     ) -> Self {
         let mut process =
             Self::new_with_options(config, None, Some(capture_limit), Some(command), None);
         process.kill_when_owner_dies = kill_when_owner_dies;
+        process.process_group_spawn_attribute = process_group_spawn_attribute;
         process
     }
 
@@ -589,6 +592,7 @@ impl NativeProcess {
             start_gate: Mutex::new(()),
             stdin: Mutex::new(None),
             kill_when_owner_dies: false,
+            process_group_spawn_attribute: false,
             #[cfg(test)]
             stdin_write_active: AtomicBool::new(false),
             config,
@@ -613,7 +617,7 @@ impl NativeProcess {
             return Err(ProcessError::AlreadyStarted);
         }
 
-        let mut command = self.build_command();
+        let (mut command, group_spawn_attribute) = self.build_command();
         let exact_trace = self
             .process_watch
             .as_ref()
@@ -650,9 +654,9 @@ impl NativeProcess {
             }
         } else {
             ChildState::from_std(
-                running_process_platform_internal::platform::ape::spawn_std(
+                running_process_platform_internal::platform::process::spawn_std_with_group_fallback(
                     &mut command,
-                    |command| command.spawn(),
+                    group_spawn_attribute,
                 )
                 .map_err(ProcessError::Spawn)?,
                 self.config.create_process_group,
@@ -1313,7 +1317,15 @@ impl NativeProcess {
         released
     }
 
-    fn build_command(&self) -> Command {
+    fn uses_process_group_spawn_attribute(&self) -> bool {
+        self.config.create_process_group
+            && self.process_group_spawn_attribute
+            && !self.kill_when_owner_dies
+            && self.config.nice.is_none()
+            && self.config.address_space_limit_bytes.is_none()
+    }
+
+    fn build_command(&self) -> (Command, bool) {
         let command_override = self
             .command_override
             .lock()
@@ -1368,10 +1380,15 @@ impl NativeProcess {
                 command
             }
         };
+        let group_spawn_attribute = self.uses_process_group_spawn_attribute()
+            && running_process_platform_internal::platform::process::apply_process_group_spawn_attribute(
+                &mut command,
+            );
+        let create_process_group = self.config.create_process_group && !group_spawn_attribute;
         let platform_config =
             running_process_platform_internal::platform::process::ProcessCommandConfig {
                 creation_flags: self.config.creationflags,
-                create_process_group: self.config.create_process_group,
+                create_process_group,
                 nice: self.config.nice,
                 address_space_limit_bytes: self.config.address_space_limit_bytes,
             };
@@ -1385,7 +1402,7 @@ impl NativeProcess {
             )
         };
         configured.expect("platform command configuration must be valid");
-        command
+        (command, group_spawn_attribute)
     }
 
     fn spawn_reader<R>(

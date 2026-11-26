@@ -1,14 +1,15 @@
 //! Process spawning, containment, inspection, termination, and stdio.
 
 pub use crate::{
-    apply_process_priority, assign_child_to_windows_job, cancel_capture_reader,
-    canonical_environment_pairs, capture_reader_done, compat_shell_command, configure_exact_trace,
-    configure_process_command, configure_process_command_for_bounded_owner_death,
-    configure_sync_contained_command, configure_sync_daemon_command,
-    configure_sync_daemon_command_with_inheritance, configure_trampoline_command,
-    current_executable_build_id, exact_trace_capability, exit_code, exit_signal,
-    monitor_console_windows, parent_has_console, prepare_capture_reader, send_interrupt,
-    set_process_name, shell_command, soft_terminate_process_group, spawn_sync, spawn_sync_daemon,
+    apply_process_group_spawn_attribute, apply_process_priority, assign_child_to_windows_job,
+    cancel_capture_reader, canonical_environment_pairs, capture_reader_done, compat_shell_command,
+    configure_exact_trace, configure_process_command,
+    configure_process_command_for_bounded_owner_death, configure_sync_contained_command,
+    configure_sync_daemon_command, configure_sync_daemon_command_with_inheritance,
+    configure_trampoline_command, current_executable_build_id, exact_trace_capability, exit_code,
+    exit_signal, monitor_console_windows, parent_has_console, prepare_capture_reader,
+    send_interrupt, set_process_name, shell_command, soft_terminate_process_group,
+    spawn_std_with_group_fallback, spawn_sync, spawn_sync_daemon,
     spawn_sync_daemon_with_inheritance, start_attached_descendant_monitor,
     start_descendant_monitor, start_exact_trace, sync_child_native_handle, trampoline_exit_code,
     unix_mark_extra_fds_close_on_exec, CaptureCancellation, PlatformCaptureReaders,

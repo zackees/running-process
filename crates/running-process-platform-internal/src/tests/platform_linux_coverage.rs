@@ -301,8 +301,9 @@ fn nice_only_spawn_reports_the_requested_niceness_once_spawn_completes() {
         .build()
         .unwrap();
     runtime.block_on(async {
-        // Raising the value only lowers priority, so no CAP_SYS_NICE is needed.
-        let requested = niceness(std::process::id()).max(0) + 3;
+        // Linux accepts niceness up to 19, including when the runner already
+        // starts at that priority. This request never needs CAP_SYS_NICE.
+        let requested = 19;
         let mut command = Command::new("/bin/sleep");
         command.arg("30").kill_on_drop(true);
         configure_command(&mut command, false, false, Some(requested)).unwrap();
