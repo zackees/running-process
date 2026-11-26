@@ -848,7 +848,7 @@ fn build_command_from_argv() {
         nice: None,
         address_space_limit_bytes: None,
     });
-    let cmd = process.build_command();
+    let (cmd, _) = process.build_command();
     assert_eq!(cmd.get_program(), "echo");
     let args: Vec<_> = cmd.get_args().collect();
     assert_eq!(args, vec!["hello", "world"]);
@@ -868,7 +868,7 @@ fn build_command_from_shell() {
         nice: None,
         address_space_limit_bytes: None,
     });
-    let cmd = process.build_command();
+    let (cmd, _) = process.build_command();
     // Shell commands go through the OS shell
     let program = cmd.get_program().to_string_lossy().to_string();
     #[cfg(windows)]
@@ -896,7 +896,7 @@ fn build_command_with_cwd() {
         nice: None,
         address_space_limit_bytes: None,
     });
-    let cmd = process.build_command();
+    let (cmd, _) = process.build_command();
     assert_eq!(cmd.get_current_dir().unwrap(), &tmp);
 }
 
@@ -917,7 +917,7 @@ fn build_command_with_env() {
         nice: None,
         address_space_limit_bytes: None,
     });
-    let cmd = process.build_command();
+    let (cmd, _) = process.build_command();
     let envs: Vec<_> = cmd.get_envs().collect();
     assert!(envs
         .iter()
@@ -941,7 +941,7 @@ fn build_command_single_argv() {
         nice: None,
         address_space_limit_bytes: None,
     });
-    let cmd = process.build_command();
+    let (cmd, _) = process.build_command();
     assert_eq!(cmd.get_program(), "echo");
     assert_eq!(cmd.get_args().count(), 0);
 }
