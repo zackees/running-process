@@ -199,8 +199,11 @@ async fn session_kill_and_wait_remain_responsive_while_stdin_is_blocked() {
 
 #[tokio::test]
 async fn session_cpu_sample_is_identity_bound_and_progresses_when_supported() {
+    // CI can inherit reduced priority. The lowest Unix priority remains
+    // available without a grant to raise priority.
+    let fixture_nice = if cfg!(unix) { 19 } else { 5 };
     let mut session = AsyncProcessBuilder::new(testbin("testbin-session-cpu-spinner"))
-        .nice(Some(5))
+        .nice(Some(fixture_nice))
         .session(options());
     session.start().await.expect("start CPU fixture");
     let before = session.cpu_time().await.expect("CPU sample request");
