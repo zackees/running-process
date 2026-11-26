@@ -98,6 +98,7 @@ pub(crate) use platform_imp::{prepare_argv_stdio, validate_spawn_argv_platform};
 pub(crate) use platform_imp::{PRIORITY_NICE_HIGH, PRIORITY_NICE_LOW};
 
 pub use platform_imp::{
+    apply_process_group_spawn_attribute, spawn_std_with_group_fallback,
     apply_process_priority, assign_child_to_windows_job, cancel_capture_reader,
     canonical_environment_pairs, capture_reader_done, compat_shell_command, configure_exact_trace,
     configure_process_command, configure_process_command_for_bounded_owner_death,

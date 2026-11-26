@@ -1470,3 +1470,37 @@ mod host_semantics_tests {
         assert!(super::ipc_handoff_transport_available());
     }
 }
+
+/// Set the native Linux spawn process-group attribute if supported by this target.
+pub fn apply_process_group_spawn_attribute(command: &mut std::process::Command) -> bool {
+    use std::os::unix::process::CommandExt;
+    command.process_group(0);
+    true
+}
+
+/// Spawn a configured command, preserving the shell fallback after Linux ENOEXEC.
+pub fn spawn_std_with_group_fallback(
+    command: &mut std::process::Command,
+    group_spawn_attribute: bool,
+) -> std::io::Result<std::process::Child> {
+    use crate::platform::ape::spawn_std;
+    use crate::platform::process::ProcessCommandConfig;
+    use std::process::Command;
+
+    let result = spawn_std(command, Command::spawn);
+    if group_spawn_attribute
+        && matches!(&result, Err(error) if error.raw_os_error() == Some(libc::ENOEXEC))
+    {
+        // posix_spawn has no execvp fallback for text without a shebang.
+        // Retry only the failed spawn, before any child initialization.
+        configure_process_command(
+            command,
+            ProcessCommandConfig {
+                create_process_group: true,
+                ..ProcessCommandConfig::default()
+            },
+        )?;
+        return spawn_std(command, Command::spawn);
+    }
+    result
+}

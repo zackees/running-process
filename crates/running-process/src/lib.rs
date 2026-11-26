@@ -479,7 +479,6 @@ pub struct NativeProcess {
     // entrypoint. General NativeProcess callers keep their established
     // platform policy surface.
     kill_when_owner_dies: bool,
-    #[cfg(target_os = "linux")]
     process_group_spawn_attribute: bool,
     #[cfg(test)]
     stdin_write_active: AtomicBool,
@@ -573,12 +572,7 @@ impl NativeProcess {
         let mut process =
             Self::new_with_options(config, None, Some(capture_limit), Some(command), None);
         process.kill_when_owner_dies = kill_when_owner_dies;
-        #[cfg(target_os = "linux")]
-        {
-            process.process_group_spawn_attribute = process_group_spawn_attribute;
-        }
-        #[cfg(not(target_os = "linux"))]
-        let _ = process_group_spawn_attribute;
+        process.process_group_spawn_attribute = process_group_spawn_attribute;
         process
     }
 
@@ -598,7 +592,6 @@ impl NativeProcess {
             start_gate: Mutex::new(()),
             stdin: Mutex::new(None),
             kill_when_owner_dies: false,
-            #[cfg(target_os = "linux")]
             process_group_spawn_attribute: false,
             #[cfg(test)]
             stdin_write_active: AtomicBool::new(false),
@@ -624,7 +617,7 @@ impl NativeProcess {
             return Err(ProcessError::AlreadyStarted);
         }
 
-        let mut command = self.build_command();
+        let (mut command, group_spawn_attribute) = self.build_command();
         let exact_trace = self
             .process_watch
             .as_ref()
@@ -661,8 +654,11 @@ impl NativeProcess {
             }
         } else {
             ChildState::from_std(
-                self.spawn_std_child(&mut command)
-                    .map_err(ProcessError::Spawn)?,
+                running_process_platform_internal::platform::process::spawn_std_with_group_fallback(
+                    &mut command,
+                    group_spawn_attribute,
+                )
+                .map_err(ProcessError::Spawn)?,
                 self.config.create_process_group,
             )
         };
@@ -1321,35 +1317,6 @@ impl NativeProcess {
         released
     }
 
-    fn spawn_std_child(&self, command: &mut Command) -> std::io::Result<std::process::Child> {
-        use running_process_platform_internal::platform::ape::spawn_std;
-
-        let result = spawn_std(command, Command::spawn);
-        #[cfg(not(target_os = "linux"))]
-        let _ = self;
-        #[cfg(target_os = "linux")]
-        if self.uses_process_group_spawn_attribute()
-            && matches!(&result, Err(error) if error.raw_os_error() == Some(libc::ENOEXEC))
-        {
-            // posix_spawn does not inherit execvp's fallback for executable
-            // text without a shebang. Retry the actual failed spawn through
-            // the original pre-exec path before any child setup takes place.
-            use running_process_platform_internal::platform::process::{
-                configure_process_command, ProcessCommandConfig,
-            };
-            configure_process_command(
-                command,
-                ProcessCommandConfig {
-                    create_process_group: true,
-                    ..ProcessCommandConfig::default()
-                },
-            )?;
-            return spawn_std(command, Command::spawn);
-        }
-        result
-    }
-
-    #[cfg(target_os = "linux")]
     fn uses_process_group_spawn_attribute(&self) -> bool {
         self.config.create_process_group
             && self.process_group_spawn_attribute
@@ -1358,7 +1325,7 @@ impl NativeProcess {
             && self.config.address_space_limit_bytes.is_none()
     }
 
-    fn build_command(&self) -> Command {
+    fn build_command(&self) -> (Command, bool) {
         let command_override = self
             .command_override
             .lock()
@@ -1413,16 +1380,11 @@ impl NativeProcess {
                 command
             }
         };
-        let create_process_group = self.config.create_process_group;
-        #[cfg(target_os = "linux")]
-        let create_process_group = if self.uses_process_group_spawn_attribute() {
-            use std::os::unix::process::CommandExt;
-            command.process_group(0);
-            // The wrapper still owns the group for timeout and overflow cleanup.
-            false
-        } else {
-            create_process_group
-        };
+        let group_spawn_attribute = self.uses_process_group_spawn_attribute()
+            && running_process_platform_internal::platform::process::apply_process_group_spawn_attribute(
+                &mut command,
+            );
+        let create_process_group = self.config.create_process_group && !group_spawn_attribute;
         let platform_config =
             running_process_platform_internal::platform::process::ProcessCommandConfig {
                 creation_flags: self.config.creationflags,
@@ -1440,7 +1402,7 @@ impl NativeProcess {
             )
         };
         configured.expect("platform command configuration must be valid");
-        command
+        (command, group_spawn_attribute)
     }
 
     fn spawn_reader<R>(
