@@ -735,6 +735,10 @@ fn captured_output_can_be_cleared_to_release_memory() {
     assert_eq!(process.captured_combined_bytes(), 0);
 }
 
+// A Linux CI process can inherit nice 19 with no permission to raise it.
+#[cfg(not(windows))]
+const FIXTURE_NICE: i32 = if cfg!(target_os = "linux") { 19 } else { 5 };
+
 #[test]
 #[cfg(not(windows))]
 fn applies_positive_nice_before_exec() {
@@ -747,7 +751,7 @@ fn applies_positive_nice_before_exec() {
             ]),
             true,
             StdinMode::Inherit,
-            Some(5),
+            Some(FIXTURE_NICE),
         )
     });
 
@@ -759,7 +763,7 @@ fn applies_positive_nice_before_exec() {
         .unwrap()
         .parse::<i32>()
         .unwrap();
-    assert!(observed >= 5);
+    assert_eq!(observed, FIXTURE_NICE);
 }
 
 #[cfg(unix)]
@@ -774,7 +778,7 @@ fn bounded_std_command_applies_positive_nice_before_exec() {
         4096,
         BoundedRunOptions::default()
             .kill_when_owner_dies(false)
-            .nice(Some(5)),
+            .nice(Some(FIXTURE_NICE)),
     )
     .unwrap();
 
@@ -784,7 +788,7 @@ fn bounded_std_command_applies_positive_nice_before_exec() {
         .trim()
         .parse::<i32>()
         .unwrap();
-    assert!(observed >= 5);
+    assert_eq!(observed, FIXTURE_NICE);
 }
 
 // ── Error path tests ──
