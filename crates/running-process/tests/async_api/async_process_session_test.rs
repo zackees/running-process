@@ -304,24 +304,38 @@ async fn split_session_waits_while_output_is_pending_for_a_held_pipe() {
             // direct-child delay. The output future therefore stays pending
             // while the separate control lane observes the direct exit.
             post_exit_grace: Some(Duration::from_millis(500)),
+            max_chunk_bytes: 8,
             ..options()
         });
     session.start().await.expect("start split session");
     let (control, mut output) = session.into_parts().expect("split started session");
 
-    let first = tokio::time::timeout(Duration::from_secs(1), output.next_output())
-        .await
-        .expect("fixture reports grandchild pid")
-        .expect("output remains open");
-    let AsyncProcessSessionEvent::Chunk(chunk) = first else {
-        panic!("fixture reports its grandchild pid as stdout")
-    };
-    let text = String::from_utf8_lossy(&chunk.bytes);
-    let pid = text
-        .split_whitespace()
-        .find_map(|word| word.strip_prefix("GRANDCHILD_PID="))
-        .and_then(|pid| pid.parse::<i32>().ok())
-        .expect("fixture reports grandchild pid before direct exit");
+    let pid = tokio::time::timeout(Duration::from_secs(1), async {
+        let mut ready_output = Vec::new();
+        loop {
+            let event = output.next_output().await.expect("output remains open");
+            let AsyncProcessSessionEvent::Chunk(chunk) = event else {
+                panic!("fixture reports both pids before output closes");
+            };
+            ready_output.extend_from_slice(&chunk.bytes);
+            let text = String::from_utf8_lossy(&ready_output);
+            let mut complete_lines = text
+                .split_inclusive('\n')
+                .filter_map(|line| line.strip_suffix('\n'));
+            let grandchild = complete_lines
+                .clone()
+                .find_map(|line| line.strip_prefix("GRANDCHILD_PID="))
+                .and_then(|pid| pid.parse::<i32>().ok());
+            if let (Some(pid), true) = (
+                grandchild,
+                complete_lines.any(|line| line.starts_with("PID=")),
+            ) {
+                break pid;
+            }
+        }
+    })
+    .await
+    .expect("fixture reports both pids before direct exit");
 
     let first_post_exit_event = {
         let pending_output = output.next_output();

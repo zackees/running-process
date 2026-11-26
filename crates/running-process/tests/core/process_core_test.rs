@@ -390,7 +390,8 @@ fn helper_force_killed_bounded_owner_reaps_child() {
     let mut command = Command::new("sh");
     command.args([
         "-c",
-        "echo $$ > \"$RUNNING_PROCESS_BOUNDED_OWNER_DEATH_PID_FILE\"; exec sleep 30",
+        "report=$RUNNING_PROCESS_BOUNDED_OWNER_DEATH_PID_FILE; \
+         printf '%s\\n' \"$$\" > \"$report.tmp\" && mv -- \"$report.tmp\" \"$report\" && exec sleep 30",
     ]);
     let result = run_std_command_bounded_with_options(
         command,
