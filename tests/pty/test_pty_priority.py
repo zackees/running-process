@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+import subprocess
 import sys
 import tempfile
 from pathlib import Path
@@ -23,6 +25,33 @@ from tests.process_helpers import (
 from tests.pty._pty_helpers import _read_until_contains
 
 
+def _allowed_posix_nice() -> int:
+    return max(5, os.getpriority(os.PRIO_PROCESS, 0))
+
+
+def _require_low_enum_priority() -> None:
+    if sys.platform == "win32" or _allowed_posix_nice() == 5:
+        return
+    probe = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import os\n"
+            "try:\n"
+            "    os.setpriority(os.PRIO_PROCESS, 0, 5)\n"
+            "except PermissionError:\n"
+            "    raise SystemExit(13)\n",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=5,
+        check=False,
+    )
+    if probe.returncode == 13:
+        pytest.skip("the inherited POSIX priority cannot be raised to the LOW enum value")
+    assert probe.returncode == 0, probe.stderr
+
+
 def test_pseudo_terminal_can_set_positive_nice() -> None:
     if sys.platform == "win32":
         process = RunningProcess.pseudo_terminal(
@@ -39,13 +68,14 @@ def test_pseudo_terminal_can_set_positive_nice() -> None:
         assert process.wait(timeout=5) == 0
         return
 
+    requested = _allowed_posix_nice()
     process = RunningProcess.pseudo_terminal(
         [sys.executable, "-c", "import os, time; time.sleep(0.3); print(os.nice(0), flush=True)"],
         text=True,
-        nice=5,
+        nice=requested,
     )
-    output = _read_until_contains(process, "5")
-    assert int(output.strip().splitlines()[-1]) >= 5
+    output = _read_until_contains(process, str(requested))
+    assert int(output.strip().splitlines()[-1]) >= requested
     assert process.wait(timeout=5) == 0
 
 
@@ -66,6 +96,7 @@ def test_posix_pty_command_wraps_nice_before_exec(monkeypatch: pytest.MonkeyPatc
 
 
 def test_pseudo_terminal_accepts_priority_enum() -> None:
+    _require_low_enum_priority()
     process = RunningProcess.pseudo_terminal(
         [sys.executable, "-c", "import os, time; time.sleep(0.3); print(os.nice(0), flush=True)"]
         if sys.platform != "win32"
@@ -100,12 +131,12 @@ def test_interactive_can_set_positive_nice() -> None:
                 "time.sleep(0.3)\n"
                 f"Path(r'{output_path}').write_text(str(os.nice(0)), encoding='utf-8')\n"
             )
-            expected = 5
+            expected = _allowed_posix_nice()
 
         process = RunningProcess.interactive(
             [sys.executable, "-c", script],
             mode=InteractiveMode.CONSOLE_SHARED,
-            nice=5,
+            nice=5 if sys.platform == "win32" else expected,
         )
         assert process.wait(timeout=5) == 0
         observed = int(output_path.read_text(encoding="utf-8"))
@@ -113,6 +144,7 @@ def test_interactive_can_set_positive_nice() -> None:
 
 
 def test_interactive_accepts_priority_enum() -> None:
+    _require_low_enum_priority()
     with tempfile.TemporaryDirectory() as temp_dir:
         output_path = Path(temp_dir) / "nice.txt"
         if sys.platform == "win32":
