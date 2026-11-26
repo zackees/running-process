@@ -35,6 +35,8 @@ pub struct BoundedRunOptions {
     /// existing creation priority-class mapping; numeric nice values are not
     /// portable priority levels across those platforms.
     nice: Option<i32>,
+
+    process_group_spawn_attribute: bool,
 }
 
 impl BoundedRunOptions {
@@ -50,6 +52,18 @@ impl BoundedRunOptions {
     #[must_use]
     pub fn nice(mut self, nice: Option<i32>) -> Self {
         self.nice = nice;
+        self
+    }
+
+    /// Set the Linux child process group using a native spawn attribute.
+    ///
+    /// Enable this only for a command whose construction you control and
+    /// which has no custom `pre_exec` callbacks. By default the bounded
+    /// runner establishes its process group after caller callbacks. Priority
+    /// changes and owner-death containment still use their existing launch path.
+    #[must_use]
+    pub fn process_group_spawn_attribute(mut self, enabled: bool) -> Self {
+        self.process_group_spawn_attribute = enabled;
         self
     }
 
@@ -245,6 +259,7 @@ pub fn run_std_command_bounded_with_options(
         config,
         output_limit,
         options.kill_when_owner_dies,
+        options.process_group_spawn_attribute,
     );
     run_native_process_bounded(process, timeout, output_limit)
 }
