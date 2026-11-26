@@ -282,19 +282,26 @@ fn bounded_std_command_spawn_attribute_creates_child_group() {
     let working_directory = tempfile::tempdir().unwrap();
     let script = working_directory.path().join("child-group");
     let program = "pgid=$(ps -o pgid= -p $$ | tr -d '[:space:]'); test \"$pgid\" = \"$$\" && pwd";
-    // The second launch also verifies the legacy ENOEXEC shell fallback.
+    // The second launch preserves the libc-specific ENOEXEC behavior.
     for header in ["#!/bin/sh\n", ""] {
         std::fs::write(&script, format!("{header}{program}")).unwrap();
         std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
         let mut command = Command::new(&script);
         command.current_dir(working_directory.path());
-        let output = run_std_command_bounded_with_options(
+        let result = run_std_command_bounded_with_options(
             command,
             Some(CHILD_EXIT_WAIT),
             4096,
             BoundedRunOptions::default().process_group_spawn_attribute(true),
-        )
-        .unwrap();
+        );
+        if header.is_empty() && cfg!(target_env = "musl") {
+            assert!(matches!(
+                result,
+                Err(ProcessError::Spawn(error)) if error.raw_os_error() == Some(libc::ENOEXEC)
+            ));
+            continue;
+        }
+        let output = result.unwrap();
         assert_eq!(output.exit_code, 0);
         assert_eq!(
             std::str::from_utf8(&output.stdout).unwrap().trim_end(),

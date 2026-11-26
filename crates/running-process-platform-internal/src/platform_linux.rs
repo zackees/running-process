@@ -1489,7 +1489,8 @@ pub fn spawn_std_with_group_fallback(
 
     let result = spawn_std(command, Command::spawn);
     if group_spawn_attribute
-        && matches!(&result, Err(error) if error.raw_os_error() == Some(libc::ENOEXEC))
+        && ape::APE_EXECVP_SHELL_FALLBACK
+        && matches!(&result, Err(error) if ape::is_exec_format_error(error))
     {
         // posix_spawn has no execvp fallback for text without a shebang.
         // Retry only the failed spawn, before any child initialization.
